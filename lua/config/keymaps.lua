@@ -142,6 +142,16 @@ if vim.g.vscode then
     local openSourceAction = "call VSCodeNotify('editor.action.sourceAction')"
     vim.cmd(openSourceAction)
   end, { noremap = true, desc = "open source Action in vs code" })
+
+  map("i", "<C-c>", function()
+    local copyText = "call VSCodeNotify('editor.action.clipboardCopyAction')"
+    vim.cmd(copyText)
+  end, { noremap = true, desc = "copy text/add text to clipboard" })
+
+  map("v", "<C-c>", function()
+    local copyText = "call VSCodeNotify('editor.action.clipboardCopyAction')"
+    vim.cmd(copyText)
+  end, { noremap = true, desc = "copy text/add text to clipboard" })
 else
   map("i", "<C-j>", "<cmd>ToggleTerm direction=float<CR><Esc>i", { desc = "open floating terminal", noremap = false })
   map("t", "<C-j>", "<cmd>ToggleTerm direction=float<CR>", { desc = "open floating terminal", noremap = false })
