@@ -49,29 +49,29 @@ if vim.g.vscode then
     { noremap = true, silent = true, desc = "vs code keybinding test" }
   )
 
-  map(
-    "v",
-    "it",
-    "<Cmd>call VSCodeCall('editor.emmet.action.balanceIn')<CR>",
-    { noremap = true, desc = "select inside tag" }
-  )
+  -- map(
+  --   "v",
+  --   "it",
+  --   "<Cmd>call VSCodeCall('editor.emmet.action.balanceIn')<CR>",
+  --   { noremap = true, desc = "select inside tag" }
+  -- )
 
-  local selectAroundTag = "call VSCodeCall('editor.emmet.action.balanceOut')"
-  local selectInsideTag = "call VSCodeCall('editor.emmet.action.balanceIn')"
-  local deletLine = "call VSCodeCall('editor.action.deleteLines')"
-  map("v", "at", function()
-    vim.cmd(selectAroundTag)
-  end, { noremap = true, desc = "select inside tag" })
+  -- local selectAroundTag = "call VSCodeCall('editor.emmet.action.balanceOut')"
+  -- local selectInsideTag = "call VSCodeCall('editor.emmet.action.balanceIn')"
+  -- local deletLine = "call VSCodeCall('editor.action.deleteLines')"
+  -- map("v", "at", function()
+  --   vim.cmd(selectAroundTag)
+  -- end, { noremap = true, desc = "select inside tag" })
 
-  map("n", "dat", function()
-    vim.cmd(selectAroundTag)
-    im.cmd(deletLine)
-  end, { noremap = true, desc = "delete inside tag" })
-
-  map("n", "dit", function()
-    vim.cmd(selectInsideTag)
-    vim.cmd(deletLine)
-  end, { noremap = true, desc = "delete inside tag" })
+  -- map("n", "dat", function()
+  --   vim.cmd(selectAroundTag)
+  --   im.cmd(deletLine)
+  -- end, { noremap = true, desc = "delete inside tag" })
+  --
+  -- map("n", "dit", function()
+  --   vim.cmd(selectInsideTag)
+  --   vim.cmd(deletLine)
+  -- end, { noremap = true, desc = "delete inside tag" })
 
   map("v", "<C-c>", function()
     local addToClipboard = "call VSCodeCall('editor.action.clipboardCopyAction')"
