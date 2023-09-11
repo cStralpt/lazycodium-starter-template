@@ -1,4 +1,8 @@
 return {
   "echasnovski/mini.ai",
-  vscode = false,
+  opts = function(_, opts)
+    opts.custom_textobjects = {
+      t = false, -- fallback to neovim for tags
+    }
+  end,
 }
