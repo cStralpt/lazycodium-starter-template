@@ -7,7 +7,7 @@ return {
       local Util = require("lazyvim.util")
       return {
         options = {
-          theme = "tokyonight-moon",
+          theme = "auto",
           globalstatus = true,
           disabled_filetypes = { statusline = { "dashboard", "alpha" } },
         },
