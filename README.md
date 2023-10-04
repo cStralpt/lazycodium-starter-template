@@ -47,4 +47,4 @@
      }
    ]
    ```
-
+Note: on macos you probably need to add command(cmd) keybindings in order this config to work flawlessly.
