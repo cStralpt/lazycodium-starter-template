@@ -1,7 +1,13 @@
 # 💤 LazyVim
 # LazyVim starter template and already configured with vs code(VSCode Neovim)
  - ![image](https://github.com/cStralpt/lazycodium-starter-template/assets/95400822/ffe8d4c5-bf06-43c2-becd-b0a03b222b67)
- - Some handy shortcuts: `<C-c>` yank and move to clipboard, `<C-a>` select all lines
+ - Some handy shortcuts:
+   - `<C-c>` yank and move to clipboard,
+   - `<C-a>` select all lines
+   - multiple cursor alternative: in insert mode -> `C-d` -> repeat with dot key in normal mode
+   - ![nvim-multi-cursor](https://github.com/cStralpt/lazycodium-starter-template/assets/95400822/935bfec5-0873-4b47-9685-40ab437e8b87)
+
+
  - VS Code keybindings to pass to Neovim:
    ```
    [
