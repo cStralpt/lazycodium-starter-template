@@ -45,7 +45,7 @@ return {
 				{
 					action = 'lua require("persistence").load()',
 					group = "Label",
-					desc = " Restore Session",
+					desc = " Session",
 					icon = "",
 					icon_hl = "@variable",
 					key = "s",
