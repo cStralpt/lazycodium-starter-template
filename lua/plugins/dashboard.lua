@@ -10,6 +10,7 @@ local logo = [[
                                                       no-𝔱𝔦𝔪𝔢2𝔡𝔦𝔢
   ]]
 logo = string.rep("\n", 8) .. logo .. "\n"
+local Util = require("lazyvim.util")
 return {
 	"nvimdev/dashboard-nvim",
 	opts = {
@@ -38,7 +39,7 @@ return {
 				{
 					desc = " Config",
 					group = "Number",
-					action = "Util.telescope.config_files()",
+					action = Util.telescope.config_files(),
 					key = "c",
 				},
 				{
