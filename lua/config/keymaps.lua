@@ -49,11 +49,6 @@ if vim.g.vscode then
 		{ noremap = true, silent = true, desc = "vs code keybinding test" }
 	)
 
-	map("v", "<C-c>", function()
-		local addToClipboard = "call VSCodeCall('editor.action.clipboardCopyAction')"
-		vim.cmd(addToClipboard)
-	end, { noremap = true, desc = "yank to clipboard" })
-
 	map("n", "<S-l>", function()
 		local cyclesNextEditor = "call VSCodeNotify('workbench.action.nextEditor')"
 		vim.cmd(cyclesNextEditor)
@@ -119,14 +114,10 @@ if vim.g.vscode then
 		vim.cmd(openSourceAction)
 	end, { noremap = true, desc = "open source Action in vs code" })
 
-	map("i", "<C-c>", function()
+	map({ "v" }, "<C-c>", function()
 		local copyText = "call VSCodeNotify('editor.action.clipboardCopyAction')"
 		vim.cmd(copyText)
-	end, { noremap = true, desc = "copy text/add text to clipboard" })
-
-	map("v", "<C-c>", function()
-		local copyText = "call VSCodeNotify('editor.action.clipboardCopyAction')"
-		vim.cmd(copyText)
+		print("📎added to clipboard!")
 	end, { noremap = true, desc = "copy text/add text to clipboard" })
 else
 	map(
