@@ -153,7 +153,7 @@ else
 	vim.api.nvim_set_keymap(
 		"n",
 		"<leader>cs",
-		"<cmd>AerialNavToggle<CR>",
+		"<cmd>AerialNavOpen<CR>",
 		{ noremap = true, silent = true, desc = "Symbols Outline(Aerial)" }
 	)
 end
