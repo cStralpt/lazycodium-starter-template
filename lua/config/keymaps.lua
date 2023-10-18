@@ -64,7 +64,7 @@ if vim.g.vscode then
 		vim.cmd(go2Referces)
 	end, { noremap = true, desc = "peek references inside vs code" })
 
-	map("n", "<leader>cp", function()
+	map("n", "<leader>sd", function()
 		local openProblemsInfos = "call VSCodeNotify('workbench.action.problems.focus')"
 		vim.cmd(openProblemsInfos)
 	end, { noremap = true, desc = "open problems and errors infos" })
