@@ -89,12 +89,12 @@ if vim.g.vscode then
 		vim.cmd(openGitSourceControl)
 	end, { noremap = true, desc = "open git source controll" })
 
-	map("n", "<leader>jml", function()
+	map("n", "<leader>sm", function()
 		local bookmarksList4CurrentFile = "call VSCodeNotify('bookmarks.list')"
 		vim.cmd(bookmarksList4CurrentFile)
 	end, { noremap = true, desc = "open bookmarks list for current files" })
 
-	map("n", "<leader>jmL", function()
+	map("n", "<leader>sM", function()
 		local bookmarksList4AllFiles = "call VSCodeNotify('bookmarks.listFromAllFiles')"
 		vim.cmd(bookmarksList4AllFiles)
 	end, { noremap = true, desc = "open bookmarks list for all files" })
@@ -109,7 +109,7 @@ if vim.g.vscode then
 		vim.cmd(codeAction4QuickFix)
 	end, { noremap = true, desc = "open quick fix in vs code" })
 
-	map("n", "<leader>cs", function()
+	map("n", "<leader>cA", function()
 		local openSourceAction = "call VSCodeNotify('editor.action.sourceAction')"
 		vim.cmd(openSourceAction)
 	end, { noremap = true, desc = "open source Action in vs code" })
