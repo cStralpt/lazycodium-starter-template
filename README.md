@@ -50,7 +50,7 @@
     {
      "key": "space s d",
      "command": "vscode-neovim.send",
-     "when": "editorTextFocus && neovim.mode == insert",
+     "when": "editorTextFocus && neovim.mode == normal",
      "args": "<leader>sd"
     },
   ]
