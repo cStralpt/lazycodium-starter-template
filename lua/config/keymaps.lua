@@ -89,17 +89,17 @@ if vim.g.vscode then
 		vim.cmd(openGitSourceControl)
 	end, { noremap = true, desc = "open git source controll" })
 
-	map("n", "<leader>sm", function()
+	map("n", "<leader>sml", function()
 		local bookmarksList4CurrentFile = "call VSCodeNotify('bookmarks.list')"
 		vim.cmd(bookmarksList4CurrentFile)
 	end, { noremap = true, desc = "open bookmarks list for current files" })
 
-	map("n", "<leader>sM", function()
+	map("n", "<leader>smL", function()
 		local bookmarksList4AllFiles = "call VSCodeNotify('bookmarks.listFromAllFiles')"
 		vim.cmd(bookmarksList4AllFiles)
 	end, { noremap = true, desc = "open bookmarks list for all files" })
 
-	map("n", "<leader>jmm", function()
+	map("n", "<leader>smm", function()
 		local bookmarksMarkToggle = "call VSCodeNotify('bookmarks.toggle')"
 		vim.cmd(bookmarksMarkToggle)
 	end, { noremap = true, desc = "toggle bookmarks" })
@@ -113,6 +113,11 @@ if vim.g.vscode then
 		local openSourceAction = "call VSCodeNotify('editor.action.sourceAction')"
 		vim.cmd(openSourceAction)
 	end, { noremap = true, desc = "open source Action in vs code" })
+
+	map("n", "<leader>cd", function()
+		local openSourceAction = "call VSCodeNotify('workbench.panel.markers.view.focus')"
+		vim.cmd(openSourceAction)
+	end, { noremap = true, desc = "open problems diagnostics" })
 
 	map({ "v" }, "<C-c>", function()
 		local copyText = "call VSCodeNotify('editor.action.clipboardCopyAction')"
