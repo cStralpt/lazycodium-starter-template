@@ -47,6 +47,61 @@
       "when": "editorTextFocus && neovim.mode == insert",
       "args": "<C-l>"
     },
+    {
+    "key": "alt+k",
+    "command": "vscode-neovim.send",
+    "when": "editorTextFocus && neovim.mode == normal",
+    "args": "<A-k>"
+    },
+    {
+      "key": "alt+j",
+      "command": "vscode-neovim.send",
+      "when": "editorTextFocus && neovim.mode == normal",
+      "args": "<A-j>"
+    },
+    {
+      "key": "alt+k",
+      "command": "vscode-neovim.send",
+      "when": "editorTextFocus && neovim.mode == insert",
+      "args": "<A-k>"
+    },
+    {
+      "key": "alt+j",
+      "command": "vscode-neovim.send",
+      "when": "editorTextFocus && neovim.mode == insert",
+      "args": "<A-j>"
+    }
   ]
   ```
+  - Required Extensions:
+    - VS Code Neovim: https://marketplace.visualstudio.com/items?itemName=asvetliakov.vscode-neovim
+    - Neovim UI Modifier: https://marketplace.visualstudio.com/items?itemName=JulianIaquinandi.nvim-ui-modifier
+  - My VS Code Settings:
+    ```
+      "workbench.colorTheme": "Night Coder Ember Contrast",
+      "extensions.experimental.affinity": {
+          "asvetliakov.vscode-neovim": 1
+      },
+      "editor.fontFamily": "FantasqueSansM Nerd Font,'Droid Sans Mono', 'monospace', monospace",
+      "editor.smoothScrolling": true,
+      "editor.stickyScroll.enabled": true,
+      "workbench.sideBar.location": "right",
+      "editor.minimap.enabled": false,
+      "editor.formatOnSave": true,
+      "workbench.activityBar.location": "hidden",
+      "nvim-ui.nvimColorCustomizationKeys": [
+          "tab.activeBorder",
+          "editorCursor.foreground",
+          "panel.border",
+          "panelTitle.activeBorder",
+          "panelTitle.activeForeground",
+          "statusBar.background",
+          "activityBar.background"
+      ],
+      "nvim-ui.nvimColorNormal": "#A25772",
+      "nvim-ui.nvimColorInsert": "#FF6464",
+      "nvim-ui.nvimColorVisual": "#525CEB",
+      "nvim-ui.nvimColorReplace": "#2B2A4C"
+    }
+    ```
   Note: on macos you probably need to add command(cmd) keybindings in order this config to work flawlessly.
