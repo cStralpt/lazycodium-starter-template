@@ -7,8 +7,12 @@
 
   - `<C-c>` yank and move to clipboard,
   - `<C-a>` select all lines
-  - multiple cursor alternative: in insert mode -> `C-d` -> repeat with dot key in normal mode
+  - multiple cursor alternative: in insert mode -> `<C-d>` -> repeat with dot key in normal mode
   - ![nvim-multi-cursor](https://github.com/cStralpt/lazycodium-starter-template/assets/95400822/935bfec5-0873-4b47-9685-40ab437e8b87)
+  - For VS Code:
+    - Bookmark Toggle: `<leader>smm`
+    - Bookmark List for current file: `<leader>sml`
+    - Bookmark List for all files: `<leader>smL`
 
 - VS Code keybindings to pass to Neovim:
   ```
@@ -76,6 +80,7 @@
   - Required Extensions:
     - VS Code Neovim: https://marketplace.visualstudio.com/items?itemName=asvetliakov.vscode-neovim
     - Neovim UI Modifier: https://marketplace.visualstudio.com/items?itemName=JulianIaquinandi.nvim-ui-modifier
+    - Bookmarks: https://marketplace.visualstudio.com/items?itemName=alefragnani.Bookmarks
   - My VS Code Settings:
     ```
       "workbench.colorTheme": "Night Coder Ember Contrast",
