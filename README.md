@@ -47,12 +47,6 @@
       "when": "editorTextFocus && neovim.mode == insert",
       "args": "<C-l>"
     },
-    {
-     "key": "space s d",
-     "command": "vscode-neovim.send",
-     "when": "editorTextFocus && neovim.mode == normal",
-     "args": "<leader>sd"
-    },
   ]
   ```
   Note: on macos you probably need to add command(cmd) keybindings in order this config to work flawlessly.
