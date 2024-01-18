@@ -104,6 +104,16 @@ if vim.g.vscode then
 		vim.cmd(bookmarksMarkToggle)
 	end, { noremap = true, desc = "toggle bookmarks" })
 
+	map("n", "<leader>smd", function()
+		local action = "call VSCodeNotify('bookmarks.clear')"
+		vim.cmd(action)
+	end, { noremap = true, desc = "clear bookmarks from current file" })
+
+	map("n", "<leader>smr", function()
+		local action = "call VSCodeNotify('bookmarks.clearFromAllFiles')"
+		vim.cmd(action)
+	end, { noremap = true, desc = "clear bookmarks from all file" })
+
 	map("n", "<leader>ca", function()
 		local codeAction4QuickFix = "call VSCodeNotify('editor.action.quickFix')"
 		vim.cmd(codeAction4QuickFix)
