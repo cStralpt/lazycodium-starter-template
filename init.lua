@@ -35,6 +35,7 @@ else
 	require("notify").setup({
 		background_colour = "#101e2c",
 	})
+	require("sg").setup({})
 	vim.api.nvim_command("highlight LineNr guifg=#bae67e ctermfg=149")
 	vim.api.nvim_command("highlight CursorLineNr guifg=#ef6b73 ctermfg=203")
 	vim.api.nvim_command("highlight CursorLine guibg=#1C1C3E")
