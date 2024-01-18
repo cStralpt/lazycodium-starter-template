@@ -74,7 +74,13 @@
       "command": "vscode-neovim.send",
       "when": "editorTextFocus && neovim.mode == insert",
       "args": "<A-j>"
-    }
+    },
+    {
+      "key": "alt+p",
+      "command": "vscode-neovim.send",
+      "when": "editorTextFocus && neovim.mode == insert",
+      "args": "<A-p>"
+    },
   ]
   ```
   - Required Extensions:
