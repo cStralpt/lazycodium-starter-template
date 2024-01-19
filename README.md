@@ -46,12 +46,6 @@
       "args": "<C-c>"
     },
     {
-      "command": "vscode-neovim.send",
-      "key": "ctrl+l",
-      "when": "editorTextFocus && neovim.mode == insert",
-      "args": "<C-l>"
-    },
-    {
     "key": "alt+k",
     "command": "vscode-neovim.send",
     "when": "editorTextFocus && neovim.mode == normal",
@@ -112,7 +106,22 @@
       "nvim-ui.nvimColorNormal": "#A25772",
       "nvim-ui.nvimColorInsert": "#FF6464",
       "nvim-ui.nvimColorVisual": "#525CEB",
-      "nvim-ui.nvimColorReplace": "#2B2A4C"
+      "nvim-ui.nvimColorReplace": "#2B2A4C",
+      "editor.cursorBlinking": "expand",
+      "vscode-neovim.neovimViewportHeightExtend": 1000,
+      "vscode-neovim.ctrlKeysForInsertMode": [
+          "a",
+          "c",
+          "d",
+          "h",
+          "j",
+          "o",
+          "r",
+          "t",
+          "u",
+          "w",
+          "l"
+      ]
     }
     ```
   Note: on macos you probably need to add command(cmd) keybindings in order this config to work flawlessly.
