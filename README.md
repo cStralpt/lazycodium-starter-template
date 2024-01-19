@@ -19,12 +19,6 @@
   [
     {
       "command": "vscode-neovim.send",
-      "key": "backspace",
-      "when": "editorTextFocus && neovim.mode == insert",
-      "args": "<BS>"
-    },
-    {
-      "command": "vscode-neovim.send",
       "key": "ctrl+/",
       "when": "editorTextFocus && neovim.mode == normal",
       "args": "<C-/>"
