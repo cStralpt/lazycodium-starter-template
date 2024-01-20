@@ -114,6 +114,11 @@ if vim.g.vscode then
 		vim.cmd(action)
 	end, { noremap = true, desc = "clear bookmarks from all file" })
 
+	map("n", "<leader>cr", function()
+		local action = "call VSCodeNotify('editor.action.rename')"
+		vim.cmd(action)
+	end, { noremap = true, desc = "rename symbol" })
+
 	map("n", "<leader>ca", function()
 		local codeAction4QuickFix = "call VSCodeNotify('editor.action.quickFix')"
 		vim.cmd(codeAction4QuickFix)
