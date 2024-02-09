@@ -34,6 +34,8 @@ else
 	require("oil").setup()
 	require("notify").setup({
 		background_colour = "#101e2c",
+		fps = 100,
+		top_down = false,
 	})
 	require("sg").setup({})
 	vim.api.nvim_command("highlight LineNr guifg=#bae67e ctermfg=149")
