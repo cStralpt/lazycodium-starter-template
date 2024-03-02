@@ -79,7 +79,12 @@ end
 local function vscodeMappings()
 	map("n", "<C-/>", function()
 		callVSCodeFunction("call VSCodeCall('workbench.action.terminal.focus')")
-	end, { noremap = true, silent = true, desc = "vs code keybinding test" })
+	end, { noremap = true, silent = true, desc = "toggle terminal" })
+
+	map("n", "<leader>cs", function()
+    print("go to symbols in editor")
+		callVSCodeFunction("call VSCodeCall('workbench.action.gotoSymbol')")
+	end, { noremap = true, silent = true, desc = "go to symbols in editor" })
 
 	map("n", "<S-l>", function()
 		callVSCodeFunction("call VSCodeNotify('workbench.action.nextEditor')")
