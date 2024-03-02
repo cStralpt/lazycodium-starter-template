@@ -81,6 +81,16 @@ local function vscodeMappings()
 		callVSCodeFunction("call VSCodeCall('workbench.action.terminal.focus')")
 	end, { noremap = true, silent = true, desc = "toggle terminal" })
 
+  map("t", "<C-l>", function()
+    print("next term")
+		callVSCodeFunction("call VSCodeCall('workbench.action.terminal.focusNextPane')")
+	end, { noremap = true, silent = true, desc = "cycle terminal focus" })
+
+	map("t", "<C-h>", function()
+    print("prev term")
+		callVSCodeFunction("call VSCodeCall('workbench.action.terminal.focusPreviousPane')")
+	end, { noremap = true, silent = true, desc = "cycle terminal focus" })
+
 	map("n", "<leader>cs", function()
     print("go to symbols in editor")
 		callVSCodeFunction("call VSCodeCall('workbench.action.gotoSymbol')")
@@ -150,8 +160,12 @@ local function vscodeMappings()
 		callVSCodeFunction("call VSCodeNotify('editor.action.sourceAction')")
 	end, { noremap = true, desc = "open source Action in vs code" })
 
-	map("n", "<leader>cd", function()
+	map("n", "<leader>cp", function()
 		callVSCodeFunction("call VSCodeNotify('workbench.panel.markers.view.focus')")
+	end, { noremap = true, desc = "open problems diagnostics" })
+
+	map("n", "<leader>cd", function()
+		callVSCodeFunction("call VSCodeNotify('editor.action.marker.next')")
 	end, { noremap = true, desc = "open problems diagnostics" })
 
 	map({ "v" }, "<C-c>", function()
