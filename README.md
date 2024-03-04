@@ -34,9 +34,21 @@
         "args": "<A-k>"
       },
       {
+        "key": "alt+k",
+        "command": "vscode-neovim.send",
+        "when": "editorTextFocus && neovim.mode == visual",
+        "args": "<A-k>"
+      },
+      {
         "key": "alt+j",
         "command": "vscode-neovim.send",
         "when": "editorTextFocus && neovim.mode == normal",
+        "args": "<A-j>"
+      },
+      {
+        "key": "alt+j",
+        "command": "vscode-neovim.send",
+        "when": "editorTextFocus && neovim.mode == visual",
         "args": "<A-j>"
       },
       {
