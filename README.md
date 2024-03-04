@@ -14,74 +14,82 @@
     - Bookmark List for current file: `<leader>sml`
     - Bookmark List for all files: `<leader>smL`
 
-- VS Code keybindings to pass to Neovim:
+- Add this Keybindings:
   ```
-  [
-    {
-      "command": "vscode-neovim.send",
-      "key": "ctrl+/",
-      "when": "editorTextFocus && neovim.mode == normal",
-      "args": "<C-/>"
-    },
-    {
-      "command": "-vscode-neovim.send",
-      "key": "ctrl+d"
-    },
-    {
-      "command": "vscode-neovim.send",
-      "key": "ctrl+a",
-      "when": "editorTextFocus && neovim.mode == insert",
-      "args": "<C-a>"
-    },
-    {
-      "key": "ctrl+c",
-      "command": "vscode-neovim.send",
-      "when": "editorTextFocus && neovim.mode == visual",
-      "args": "<C-c>"
-    },
-    {
-    "key": "alt+k",
-    "command": "vscode-neovim.send",
-    "when": "editorTextFocus && neovim.mode == normal",
-    "args": "<A-k>"
-    },
-    {
-      "key": "alt+j",
-      "command": "vscode-neovim.send",
-      "when": "editorTextFocus && neovim.mode == normal",
-      "args": "<A-j>"
-    },
-    {
-      "key": "alt+k",
-      "command": "vscode-neovim.send",
-      "when": "editorTextFocus && neovim.mode == insert",
-      "args": "<A-k>"
-    },
-    {
-      "key": "alt+j",
-      "command": "vscode-neovim.send",
-      "when": "editorTextFocus && neovim.mode == insert",
-      "args": "<A-j>"
-    },
-    {
-      "key": "alt+k",
-      "command": "vscode-neovim.send",
-      "when": "editorTextFocus && neovim.mode == visual",
-      "args": "<A-k>"
-    },
-    {
-      "key": "alt+j",
-      "command": "vscode-neovim.send",
-      "when": "editorTextFocus && neovim.mode == visual",
-      "args": "<A-j>"
-    },
-    {
-      "key": "alt+p",
-      "command": "vscode-neovim.send",
-      "when": "editorTextFocus && neovim.mode == insert",
-      "args": "<A-p>"
-    },
-  ]
+    [
+      {
+        "command": "-vscode-neovim.send",
+        "key": "ctrl+d"
+      },
+      {
+        "key": "ctrl+c",
+        "command": "vscode-neovim.send",
+        "when": "editorTextFocus && neovim.mode == visual",
+        "args": "<C-c>"
+      },
+      {
+        "key": "alt+k",
+        "command": "vscode-neovim.send",
+        "when": "editorTextFocus && neovim.mode == normal",
+        "args": "<A-k>"
+      },
+      {
+        "key": "alt+j",
+        "command": "vscode-neovim.send",
+        "when": "editorTextFocus && neovim.mode == normal",
+        "args": "<A-j>"
+      },
+      {
+        "key": "alt+k",
+        "command": "vscode-neovim.send",
+        "when": "editorTextFocus && neovim.mode == insert",
+        "args": "<A-k>"
+      },
+      {
+        "key": "alt+j",
+        "command": "vscode-neovim.send",
+        "when": "editorTextFocus && neovim.mode == insert",
+        "args": "<A-j>"
+      },
+      {
+        "key": "alt+p",
+        "command": "vscode-neovim.send",
+        "when": "editorTextFocus && neovim.mode == insert",
+        "args": "<A-p>"
+      },
+      {
+        "key": "ctrl+/",
+        "command": "vscode-neovim.send",
+        "when": "terminalFocus",
+        "args": "<C-/>"
+      },
+      {
+        "key": "ctrl+h",
+        "command": "workbench.action.terminal.focusPreviousPane",
+        "when": "terminalFocus",
+      },
+      {
+        "key": "ctrl+l",
+        "command": "workbench.action.terminal.focusNextPane",
+        "when": "terminalFocus",
+      },
+      {
+        "key": "ctrl+shift+h",
+        "command": "workbench.action.terminal.focusPrevious",
+        "when": "terminalFocus",
+      },
+      {
+        "key": "ctrl+shift+l",
+        "command": "workbench.action.terminal.focusNext",
+        "when": "terminalFocus",
+      },
+      {
+        "key": "ctrl+shift+t",
+        "command": "workbench.action.terminal.newInActiveWorkspace",
+        "when": "terminalFocus",
+      },
+    ]
+
   ```
   - Required Extensions:
     - VS Code Neovim: https://marketplace.visualstudio.com/items?itemName=asvetliakov.vscode-neovim
