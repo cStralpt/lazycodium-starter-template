@@ -3,17 +3,16 @@
 -- Add any additional options here
 local opt = vim.opt
 opt.undofile = false
--- opt.shell = "pwsh.exe"
-if vim.fn.executable("pwsh") == 1 then
-  vim.cmd([[
-    set shell=pwsh
-    set shellcmdflag=-command
-    set shellquote=\"
-    set shellxquote=
-  ]])
+-- opt.shell = "powershell.exe"
+if vim.fn.executable("powershell") == 1 then
+  -- Use PowerShell as the default shell in Windows
+  vim.opt.shell = "powershell"
+  vim.opt.shellcmdflag = "-command"
+  vim.opt.shellquote = '"'
+  vim.opt.shellxquote = ""
 else
-  vim.cmd([[
-    set shell=bash
-  ]])
+  -- Fallback to bash if PowerShell is not available
+  vim.opt.shell = "bash"
 end
+
 opt.clipboard = ""
