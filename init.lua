@@ -33,6 +33,12 @@ else
   vim.api.nvim_command("highlight LineNr guifg=#bae67e ctermfg=149")
   vim.api.nvim_command("highlight CursorLineNr guifg=#ef6b73 ctermfg=203")
   vim.api.nvim_command("highlight CursorLine guibg=#1C1C3E")
+  if vim.g.neovide then
+    vim.g.neovide_transparency = 0.6
+    vim.keymap.set('i', '<C-S-v>', '<C-r>+')
+    vim.o.pumblend=20
+    vim.o.winblend=20
+  end
 
   -- make nvim transparent
   local transparencyOptions = {
