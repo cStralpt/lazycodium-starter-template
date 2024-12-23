@@ -37,8 +37,8 @@ else
   vim.o.pumblend = 20
 
   if vim.g.neovide then
-    vim.g.neovide_background_color = '#0f1117'
-    vim.g.neovide_transparency = 0.9
+    -- vim.g.neovide_background_color = '#0f1117'
+    -- vim.g.neovide_transparency = 0.9
     vim.keymap.set("i", "<C-S-v>", "<C-r>+")
     vim.g.neovide_refresh_rate = 100
     vim.g.neovide_refresh_rate_idle = 5
@@ -50,30 +50,32 @@ else
     vim.g.neovide_floating_blur_amount_y = 2.0
   end
 
-  -- make nvim transparent
-  local transparencyOptions = {
-    init = {
-      Normal = { bg = "NONE", ctermbg = "NONE" },
-      NormalNC = { bg = "NONE", ctermbg = "NONE" },
-      NeoTreeNormal = { bg = "NONE", ctermbg = "NONE" },
-      NeoTreeNormalNC = { bg = "NONE", ctermbg = "NONE" },
-    },
-  }
+  -- make nvim transparent (only in bare neovim)
+  if not vim.g.vscode and not vim.g.neovide then
+    local transparencyOptions = {
+      init = {
+        Normal = { bg = "NONE", ctermbg = "NONE" },
+        NormalNC = { bg = "NONE", ctermbg = "NONE" },
+        NeoTreeNormal = { bg = "NONE", ctermbg = "NONE" },
+        NeoTreeNormalNC = { bg = "NONE", ctermbg = "NONE" },
+      },
+    }
 
-  if transparencyOptions then
-    for group, hl in pairs(transparencyOptions.init) do
-      vim.cmd(
-        "highlight "
-          .. group
-          .. " guifg="
-          .. (hl.gui and hl.gui.fg or "NONE")
-          .. " guibg="
-          .. (hl.gui and hl.gui.bg or "NONE")
-          .. " ctermfg="
-          .. (hl.cterm and hl.cterm.fg or "NONE")
-          .. " ctermbg="
-          .. (hl.cterm and hl.cterm.bg or "NONE")
-      )
+    if transparencyOptions then
+      for group, hl in pairs(transparencyOptions.init) do
+        vim.cmd(
+          "highlight "
+            .. group
+            .. " guifg="
+            .. (hl.gui and hl.gui.fg or "NONE")
+            .. " guibg="
+            .. (hl.gui and hl.gui.bg or "NONE")
+            .. " ctermfg="
+            .. (hl.cterm and hl.cterm.fg or "NONE")
+            .. " ctermbg="
+            .. (hl.cterm and hl.cterm.bg or "NONE")
+        )
+      end
     end
   end
 end
