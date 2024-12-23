@@ -2,7 +2,8 @@
 
 # LazyVim starter template and already configured with vs code(VSCode Neovim)
 
-- ![image](https://github.com/cStralpt/lazycodium-starter-template/assets/95400822/ffe8d4c5-bf06-43c2-becd-b0a03b222b67)
+- ![image](https://github.com/user-attachments/assets/8b68bdb3-3c19-49b1-8a25-006e15ac4815)
+
 - Some handy shortcuts:
 
   - `<C-c>` yank and move to clipboard,
