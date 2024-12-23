@@ -46,12 +46,12 @@ end, { remap = false, desc = "copy selected text" })
 map("i", "<BS>", "<cmd>norm! de<CR>", { noremap = true, desc = "delete next word to right" })
 map("i", "<C-l>", "<Del>", { remap = true, desc = "delete one character backward" })
 local function neovimMappings()
-  map(
-    { "i", "t" },
-    "<C-j>",
-    "<cmd>ToggleTerm direction=float<CR><Esc>i",
-    { desc = "open floating terminal", noremap = false }
-  )
+  -- map(
+  --   { "i", "t" },
+  --   "<C-j>",
+  --   "<cmd>ToggleTerm direction=float<CR><Esc>i",
+  --   { desc = "open floating terminal", noremap = false }
+  -- )
 
   map("i", "<C-d>", function()
     local new_text = vim.fn.input("Replace with?: ")
