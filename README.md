@@ -2,7 +2,8 @@
 
 # LazyVim starter template and already configured with vs code(VSCode Neovim)
 
-- ![image](https://github.com/user-attachments/assets/8b68bdb3-3c19-49b1-8a25-006e15ac4815)
+- ![image](https://github.com/user-attachments/assets/6b3e353b-b7ba-4973-9e4c-547af5bcbac1)
+
 
 - Some handy shortcuts:
 
