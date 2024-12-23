@@ -67,13 +67,6 @@ local function neovimMappings()
   end, { noremap = true, silent = true, desc = "toggle word wrap" })
   map("n", "<leader>bc", "<cmd>BufferLinePick<CR>", { noremap = false, silent = true, desc = "pick buffer" })
   map("n", "-", require("oil").open, { desc = "Open parent directory" })
-  -- force/replace already used keymaps
-  vim.api.nvim_set_keymap(
-    "n",
-    "<leader>cs",
-    "<cmd>AerialNavOpen<CR>",
-    { noremap = true, silent = true, desc = "Symbols Outline(Aerial)" }
-  )
 end
 
 local function vscodeMappings()
