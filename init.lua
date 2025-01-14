@@ -38,8 +38,9 @@ else
 
   if vim.g.neovide then
     -- vim.g.neovide_background_color = '#0f1117'
-    -- vim.g.neovide_transparency = 0.9
+    vim.g.neovide_transparency = 0.9
     vim.keymap.set("i", "<C-S-v>", "<C-r>+")
+    vim.keymap.set("t", "<C-S-v>", [[<C-\><C-n>"+pi]], { noremap = true, silent = true })
     vim.g.neovide_refresh_rate = 100
     vim.g.neovide_refresh_rate_idle = 5
     vim.g.neovide_cursor_animate_in_insert_mode = true
