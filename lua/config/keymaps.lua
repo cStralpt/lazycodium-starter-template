@@ -165,6 +165,14 @@ local function vscodeMappings()
     callVSCodeFunction("call VSCodeNotify('editor.action.clipboardCopyAction')")
     print("📎added to clipboard!")
   end, { noremap = true, desc = "copy text/add text to clipboard" })
+
+  map({ "n" }, "u", function()
+    callVSCodeFunction("call VSCodeNotify('undo')")
+  end, { noremap = true, desc = "undo changes" })
+
+  map({ "n" }, "<C-r>", function()
+    callVSCodeFunction("call VSCodeNotify('redo')")
+  end, { noremap = true, desc = "redo changes" })
 end
 
 if vim.g.vscode then
