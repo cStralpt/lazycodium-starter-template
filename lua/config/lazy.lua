@@ -26,7 +26,6 @@ require("lazy").setup({
     { import = "lazyvim.plugins.extras.vscode" },
     { import = "lazyvim.plugins.extras.lang.rust" },
     { import = "lazyvim.plugins.extras.coding.mini-surround" },
-    { import = "lazyvim.plugins.extras.ui.smear-cursor" },
     { import = "lazyvim.plugins.extras.util.gitui" },
     { import = "lazyvim.plugins.extras.ui.mini-animate" },
     -- import/override with your plugins
