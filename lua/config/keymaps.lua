@@ -177,6 +177,21 @@ local function vscodeMappings()
   map({ "n" }, "<C-r>", function()
     callVSCodeFunction("call VSCodeNotify('redo')")
   end, { noremap = true, desc = "redo changes" })
+
+  map("n", "<leader>cix", function()
+    callVSCodeFunction("call VSCodeNotify()")
+    print("🤖 Opening ChatGPT Codex...")
+  end, { noremap = true, silent = true, desc = "open ChatGPT Codex sidebar" })
+
+  map("n", "<leader>cic", function()
+    callVSCodeFunction("call VSCodeNotify('workbench.action.focusAuxiliaryBar')")
+    print("🔧 Opening Cursor...")
+  end, { noremap = true, silent = true, desc = "open cursor auxiliary bar" })
+
+  map("n", "<leader>cia", function()
+    callVSCodeFunction("call VSCodeNotify('vscode-augment.startNewChat')")
+    print("✨ Starting Augment Chat...")
+  end, { noremap = true, silent = true, desc = "start new augment chat" })
 end
 
 if vim.g.vscode then
