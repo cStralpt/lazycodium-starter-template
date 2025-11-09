@@ -61,6 +61,10 @@ local function neovimMappings()
 
   map("i", "<C-f>", "<Esc>/", { noremap = false })
 
+  map("v", "<C-c>", function()
+    copyToClipBoard()
+  end, { remap = false, desc = "copy selected text" })
+
   -- Map a keybinding to toggle word wrap
   map("n", "<leader>ct", function()
     ToggleWordWrap()
