@@ -179,7 +179,7 @@ local function vscodeMappings()
   end, { noremap = true, desc = "redo changes" })
 
   map("n", "<leader>cix", function()
-    callVSCodeFunction("call VSCodeNotify()")
+    callVSCodeFunction("call VSCodeNotify('chatgpt.openSidebar')")
     print("🤖 Opening ChatGPT Codex...")
   end, { noremap = true, silent = true, desc = "open ChatGPT Codex sidebar" })
 
