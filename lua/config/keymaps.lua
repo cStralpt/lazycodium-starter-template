@@ -192,6 +192,11 @@ local function vscodeMappings()
     callVSCodeFunction("call VSCodeNotify('vscode-augment.startNewChat')")
     print("✨ Starting Augment Chat...")
   end, { noremap = true, silent = true, desc = "start new augment chat" })
+
+  map("n", "<leader>cik", function()
+    callVSCodeFunction("call VSCodeNotify('kiroAgent.newSession')")
+    print("✨ Starting new session i kiro")
+  end, { noremap = true, silent = true, desc = "start new kiro session" })
 end
 
 if vim.g.vscode then
