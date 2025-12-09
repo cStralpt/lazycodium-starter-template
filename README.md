@@ -16,6 +16,12 @@
     - Bookmark List for current file: `<leader>sml`
     - Bookmark List for all files: `<leader>smL`
 
+  - AI Keybindings(VS Code):
+    - `<leader>cix` - Open ChatGPT Codex sidebar
+    - `<leader>cic` - Open Cursor bar
+    - `<leader>cia` - Start new Augment Chat
+    - `<leader>cik` - Start new Kiro session
+
 - Add this Keybindings:
   ```
     [
