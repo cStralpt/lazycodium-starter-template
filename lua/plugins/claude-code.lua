@@ -76,6 +76,10 @@ local function spawn_new(state, cmd)
   state.win = win
   vim.fn.termopen(cmd, { cwd = vim.fn.getcwd(0) })
   state.buf = buf
+  -- Matches shared_terminal.lua's wrap() label exactly, so
+  -- tmux_tab_session_name() below can find the right shared session
+  -- regardless of whether this tab was started via <leader>ac or <leader>at.
+  state.cmd_label = tostring(cmd):match("^%S+") or "term"
   vim.cmd("startinsert")
 end
 
@@ -120,18 +124,55 @@ local function toggle_tab_claude_layout()
   show_existing(state)
 end
 
+---Name of the shared tmux session `shared_terminal.lua` would attach this
+---tab's terminal to, under collaboration -- must match its `wrap()` naming
+---exactly (label-rootPORT-tabN). `label` is whatever command first spawned
+---this tab's terminal ("claude" via <leader>ac, or the shell via <leader>at
+----- see the comment on tab_claude above). Returns nil outside a root
+---session, since without collaboration there's only ever this one Neovim
+---instance and the local `alive` check already covers everything.
+local function tmux_tab_session_name()
+  if not vim.g.instant_root_port then
+    return nil
+  end
+  local state = tab_claude[tab_id()]
+  local label = state and state.cmd_label or "claude"
+  return ("%s-root%s-tab%d"):format(label, tostring(vim.g.instant_root_port), tab_id())
+end
+
 ---Type text directly into THIS tab's terminal job (same effect as you typing
 ---it yourself -- works whether "claude" or a plain shell is running there,
 ---no MCP required). This is what keeps mention/send scoped to the Claude
 ---actually open in the current tab, unlike the <leader>aI* commands which
 ---can only ever reach the one singleton MCP review session.
-local function send_to_tab_claude(text)
+---
+---If THIS Neovim instance has no local window for the tab's terminal, that
+---does NOT mean nothing is running for this tab -- under collaboration,
+---another window sharing the same root session/tab may already have it open
+---(same tmux session, per shared_terminal.lua). In that case the text is
+---delivered straight into that shared session via tmux, and no window opens
+---here: only the window that already has it visible shows any effect.
+---<leader>ac/<leader>at are unaffected and still explicitly toggle/spawn a
+---window in whichever terminal they're pressed in.
+local function send_to_tab_terminal(text)
   local id = tab_id()
   local state = tab_claude[id]
-  if not (state and state.buf and vim.api.nvim_buf_is_valid(state.buf)) then
+  local alive = state and state.buf and vim.api.nvim_buf_is_valid(state.buf)
+
+  if not alive then
+    local session = tmux_tab_session_name()
+    if session then
+      vim.fn.system({ "tmux", "has-session", "-t", session })
+      if vim.v.shell_error == 0 then
+        vim.fn.system({ "tmux", "send-keys", "-t", session, "-l", text })
+        vim.notify("Sent to this tab's terminal (open in another window)", vim.log.levels.INFO)
+        return
+      end
+    end
     vim.notify("No Claude terminal in this tab yet (<leader>ac to start one)", vim.log.levels.WARN)
     return
   end
+
   vim.fn.chansend(vim.b[state.buf].terminal_job_id, text)
   if state.win and vim.api.nvim_win_is_valid(state.win) then
     vim.api.nvim_set_current_win(state.win)
@@ -190,7 +231,7 @@ return {
       "<leader>al",
       function()
         local file = vim.fn.fnamemodify(vim.fn.expand("%:p"), ":.")
-        send_to_tab_claude(("@%s:%d "):format(file, vim.fn.line(".")))
+        send_to_tab_terminal(("@%s:%d "):format(file, vim.fn.line(".")))
       end,
       desc = "Mention current line to this tab's Claude",
     },
@@ -210,7 +251,7 @@ return {
           vim.notify("No local marks (a-z) set in this buffer", vim.log.levels.WARN)
           return
         end
-        send_to_tab_claude(table.concat(mentioned, " ") .. " ")
+        send_to_tab_terminal(table.concat(mentioned, " ") .. " ")
       end,
       desc = "Mention all marked lines to this tab's Claude",
     },
@@ -221,7 +262,7 @@ return {
         local s, e = vim.fn.line("'<"), vim.fn.line("'>")
         local file = vim.fn.fnamemodify(vim.fn.expand("%:p"), ":.")
         local lines = vim.api.nvim_buf_get_lines(0, s - 1, e, false)
-        send_to_tab_claude(("%s:%d-%d\n```\n%s\n```\n"):format(file, s, e, table.concat(lines, "\n")))
+        send_to_tab_terminal(("%s:%d-%d\n```\n%s\n```\n"):format(file, s, e, table.concat(lines, "\n")))
       end,
       mode = "v",
       desc = "Send visual selection to this tab's Claude",
