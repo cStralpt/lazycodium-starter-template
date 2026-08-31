@@ -85,20 +85,10 @@ end
 --     glob-match (the LazyVim dashboard, in practice), which is exactly
 --     what broke navigation before.
 
--- instant.lua broadcasts a buffer under a cwd-relative name (or bare
--- basename), then the RECEIVING side calls nvim_buf_set_name() with that
--- string -- but nvim_buf_set_name silently normalizes relative names to an
--- ABSOLUTE path resolved against ITS OWN cwd (confirmed directly: setting a
--- scratch buffer's name to "lazy-lock.json" from cwd /tmp reads back as
--- "/tmp/lazy-lock.json", never the relative string). So the stored buffer
--- name is never the relative string an earlier version of this file
--- compared against -- that's why matching always failed. Since the mirror
--- inherits the host's cwd (jobstart's default), that normalization round-
--- trips right back to the host's own absolute path -- so just compare
--- against the absolute path directly instead of re-deriving a relative one.
-local function expected_bufname(file)
-  return file ~= "" and file or nil
-end
+-- See lua/util/instant_bufname.lua for why this ISN'T simply the original
+-- absolute path -- that only round-trips correctly when the file happens
+-- to be inside the sender's cwd, which real usage constantly violates.
+local expected_bufname = require("util.instant_bufname").expected_bufname
 
 local function lua_quote(s)
   return "'" .. s:gsub("\\", "\\\\"):gsub("'", "\\'") .. "'"
@@ -187,7 +177,18 @@ end, 300)
   local f = io.open(script_path, "w")
   f:write(script)
   f:close()
-  vim.fn.jobstart({ "foot", "nvim", "-c", "luafile " .. script_path }, { detach = true })
+
+  -- jobstart's `cwd` option (and its documented default, "the current
+  -- directory") does NOT reliably reach nvim here -- confirmed directly:
+  -- after `:cd /tmp/myproject` on the host, the spawned mirror's getcwd()
+  -- came back as $HOME, not /tmp/myproject. foot (or something in its
+  -- child-shell startup) resets the working directory rather than
+  -- inheriting what it was launched with. foot's own `-D`/
+  -- --working-directory flag sidesteps that inheritance chain entirely by
+  -- setting it explicitly, which is why both that AND jobstart's `cwd` are
+  -- set below -- belt and suspenders, but only -D is actually load-bearing.
+  local cwd = vim.fn.getcwd(0)
+  vim.fn.jobstart({ "foot", "-D", cwd, "nvim", "-c", "luafile " .. script_path }, { detach = true, cwd = cwd })
 end
 
 -- Whether THIS nvim process is currently running a server -- tracked
@@ -234,6 +235,15 @@ local function host_session()
       vim.g.instant_root_port = port
       vim.cmd("InstantStartSession 127.0.0.1 " .. port)
       add_session(port, file)
+
+      -- Snapshot the FULL current tab layout right now, at the exact
+      -- moment this window becomes a root session -- not just future
+      -- changes. Tabs opened before this point never fired
+      -- shared_tabs.lua's TabNew/BufEnter hooks (they early-return when
+      -- there's no root_port yet), so without an explicit snapshot here,
+      -- a mirror spawned a moment later would only ever have the ONE tab
+      -- you happened to be on, not the two or three you already had open.
+      require("util.shared_tabs").write_snapshot(port)
 
       -- Keep the registry entry's file live-updated as the host switches
       -- files, so the picker never shows what you had open when you first
@@ -404,9 +414,11 @@ return {
     -- anywhere (Claude, a shell, whatever) transparently mirror across
     -- collaborative windows once a root session exists. No other plugin
     -- opts into this or knows it's happening -- see util/shared_terminal.lua.
-    -- `init` runs at startup for every window, lazy-loaded plugin or not,
-    -- so this is active well before any <leader>iss press.
+    -- Same idea for tab creation -- see util/shared_tabs.lua. `init` runs at
+    -- startup for every window, lazy-loaded plugin or not, so both are
+    -- active well before any <leader>iss press.
     require("util.shared_terminal").install()
+    require("util.shared_tabs").install()
   end,
   keys = {
     { "<leader>iss", host_session, desc = "Instant: host session + open mirror window" },
