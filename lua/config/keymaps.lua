@@ -45,6 +45,41 @@ map({ "v", "i" }, "<C-c>", function()
 end, { remap = false, desc = "copy selected text" })
 map("i", "<BS>", "<cmd>norm! de<CR>", { noremap = true, desc = "delete next word to right" })
 map("i", "<C-l>", "<Del>", { remap = true, desc = "delete one character backward" })
+-- Terminal-mode window navigation, so you can jump between the Claude Code
+-- chat and your code buffers without leaving terminal-insert mode first.
+-- Normal-mode <C-hjkl> window nav already ships with LazyVim; this mirrors it
+-- for "t" mode so the same keys work while typing into Claude.
+-- Deliberately NOT mapping <esc><esc> here: a leading-<Esc> mapping makes
+-- Neovim delay every single <Esc> by 'timeoutlen' waiting for a second one,
+-- which breaks Claude Code's press-Esc-to-interrupt. Use <C-\><C-n> (Neovim's
+-- real default) if you ever need to drop to terminal-normal mode in place.
+map("t", "<C-h>", "<cmd>wincmd h<cr>", { desc = "Go to Left Window" })
+map("t", "<C-j>", "<cmd>wincmd j<cr>", { desc = "Go to Lower Window" })
+map("t", "<C-k>", "<cmd>wincmd k<cr>", { desc = "Go to Upper Window" })
+map("t", "<C-l>", "<cmd>wincmd l<cr>", { desc = "Go to Right Window" })
+
+-- <C-\><C-n> (Neovim's real default to drop to terminal-normal mode) doesn't
+-- reach Neovim reliably from every keyboard layout/terminal emulator (some
+-- need AltGr for backslash, some swallow the chord). <C-g> is far more
+-- portable and unused by Claude Code, so bind it to the same action.
+map("t", "<C-g>", "<C-\\><C-n>", { desc = "Exit terminal mode (terminal-normal)" })
+
+-- LazyVim's default <C-/> opens an EMBEDDED terminal buffer (Snacks.terminal,
+-- toggleable/hideable like any Neovim window) but runs $SHELL, which is bash
+-- here -- hence the "bare" look, even though you interactively use fish
+-- (styled prompt, theme, etc.) everywhere else. Run fish in it instead so
+-- the embedded terminal actually looks like your terminal.
+local function open_terminal()
+  local shell = vim.fn.executable("fish") == 1 and "fish" or nil
+  -- snacks.nvim defaults to a FLOATING window whenever `cmd` is non-nil
+  -- (assumes a one-off command), and only defaults to "bottom" when cmd is
+  -- nil (a plain shell). Since we always pass an explicit shell now, pin
+  -- position explicitly or it silently floats instead of splitting.
+  Snacks.terminal.focus(shell, { cwd = LazyVim.root(), win = { position = "bottom" } })
+end
+map({ "n", "t" }, "<C-/>", open_terminal, { desc = "Terminal (fish, embedded)" })
+map({ "n", "t" }, "<C-_>", open_terminal, { desc = "which_key_ignore" })
+
 local function neovimMappings()
   -- map(
   --   { "i", "t" },
