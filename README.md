@@ -184,19 +184,33 @@
 
 ## 🤖 Claude Code in Neovim
 
-Two separate mechanisms, on purpose — see `lua/plugins/claude-code.lua`:
-
-1. **Per-tab Claude** (`<leader>ac` / `at` / `aw` / `al` / `aM` / `as`) — a real, independent `claude` process **per tab**, no shared state, no MCP.
-2. **MCP review session** (`<leader>aI...`) — the one `coder/claudecode.nvim`-integrated session (inline diff accept/reject), shared across the whole Neovim instance. That plugin can only ever hold one live MCP connection per process, so this is deliberately singleton — not a bug, an architectural limit.
-
-### Convenient bits worth knowing
+A separate Claude per tab (`<leader>ac`), plus one shared MCP review session for inline diffs (`<leader>aI...`).
 
 | Keybinding | What it does |
 | --- | --- |
-| `<leader>ac` | Per-tab Claude, genuinely isolated. Open a repo per tab, `<leader>ac` in each — they don't collide, don't share history, and toggling one never touches another. |
-| `<leader>ac` / `<leader>at` | Always converge. `ac` spins up `claude` directly; `at` spins up a plain shell (`fish`, styled, real `cd` + tab-completion) so you can navigate first and run `claude` yourself. Whichever one you used, the *other* key toggles that exact same session afterward — no duplicate sessions, no guessing which key "owns" it. |
-| `<leader>aw` | Float ↔ split, conversation intact. Toggles the current tab's Claude between a right split and a centered float without killing the job — same scrollback, same context, just different chrome. The float is forced opaque (`winblend = 0`) regardless of the global transparency setting, so text stays readable. |
-| `<leader>aM` / `<leader>al` / `<leader>as` | Mark it, then mention it — no copy/paste. Drop vim marks (`ma`, `mb`, ...) on lines you have feedback on while reading code, then `<leader>aM` sends every marked line as an `@file:line` reference straight into that tab's Claude in one shot. `<leader>al` does the same for just the current line. `<leader>as` (visual) sends the selected code block with its file:line range. All three type directly into the terminal job (`chansend`) — works whether that tab is running `claude` or you're mid-`at`-shell, no MCP required. |
-| `<C-h/j/k/l>`, `<Esc>`, `<C-g>` | Jump in and out without breaking flow. `<C-h/j/k/l>` move between the Claude window and your code from *either* side, even mid-terminal-insert. Landing in the Claude window auto-enters insert (ready to type immediately). Plain `<Esc>` still interrupts Claude instantly — no delay-inducing `<Esc><Esc>` mapping in the way. `<C-g>` drops to terminal-normal mode if `<C-\><C-n>` doesn't reach your terminal/keyboard layout. |
-| `<C-/>` | A *styled* embedded terminal. Runs `fish` (not bash) inside a real Neovim split, so it looks like your actual terminal instead of a bare shell — while staying toggleable/hideable like any Neovim window. |
-| `<leader>aIc/aIf/aIr/aIC/aIm`, `aIb/aIl/aIM`, `aIa/aId` | Review session, when you want it. `aIc/aIf/aIr/aIC/aIm` manage the shared MCP session; `aIb/aIl/aIM` add context to it; `aIa/aId` accept/reject its inline diffs. Reach for this specifically when you want Claude reading your live buffer state and proposing diffs you review in Neovim itself — everyday chat lives in the per-tab sessions above. |
+| `<leader>ac` | Open/toggle Claude Code for this tab |
+| `<leader>at` | Open/toggle a plain terminal for this tab (toggles the same session as `<leader>ac`) |
+| `<leader>aw` | Toggle Claude between a split and a floating window |
+| `<leader>al` | Send the current line to Claude |
+| `<leader>aM` | Send all marked lines (`ma`, `mb`, ...) to Claude |
+| `<leader>as` | (visual) Send the selected code to Claude |
+| `<C-h/j/k/l>` | Move between the Claude window and your code |
+| `<Esc>` | Interrupt Claude |
+| `<C-g>` | Exit terminal mode |
+| `<C-/>` | Open an embedded terminal |
+| `<leader>aIc` | Toggle the MCP review session |
+| `<leader>aIf/aIr/aIC/aIm` | Focus / resume / continue the review session / pick a model |
+| `<leader>aIb/aIl/aIM` | Add buffer / current line / marked lines as context |
+| `<leader>aIa/aId` | Accept / reject a diff |
+
+## 🪟 Multi-Window Session Mirroring (dual-monitor)
+
+Edit the same file from two `nvim` windows at once — great for a second monitor. Each window keeps its own cursor, so you're never forced to look at the same spot, but content and terminals (including Claude) stay live-synced. Localhost only.
+
+Requires `tmux` (`sudo pacman -S tmux` or `paru -S tmux`) for terminal mirroring.
+
+| Keybinding | What it does |
+| --- | --- |
+| `<leader>iss` | Start (or extend) a mirrored session — opens a second window automatically |
+| `<leader>isj` | Join a session by port, if the auto-mirror didn't reach a window |
+| `<leader>isS` | Stop mirroring for this window |
