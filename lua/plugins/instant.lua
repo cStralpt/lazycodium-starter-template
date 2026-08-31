@@ -1,29 +1,62 @@
 -- A hardcoded port would make every hosted session collide with any other
 -- one still running (EADDRINUSE), and a failed StartServer call tears down
 -- whatever session that window already had. So each host picks a random,
--- likely-free port automatically; join still lets you type any port
--- manually (prefilled with the last known one for convenience).
-local function state_path()
-  return vim.fn.stdpath("cache") .. "/instant-last-session.json"
+-- likely-free port automatically.
+--
+-- Every session a host starts on this machine gets recorded here (port,
+-- file, when) so <leader>isp can show a picker of ALL known sessions to
+-- join, not just the most recent one -- a single "last session" file isn't
+-- enough once more than one is running at a time. A host removes its own
+-- entry on <leader>isS; entries aren't otherwise verified live (no active
+-- probe), so a session whose host crashed/quit without stopping cleanly may
+-- linger until picked and found unreachable.
+local function registry_path()
+  return vim.fn.stdpath("cache") .. "/instant-sessions.json"
 end
 
-local function save_state(port, file)
-  local f = io.open(state_path(), "w")
-  if f then
-    f:write(vim.fn.json_encode({ port = port, file = file }))
-    f:close()
-  end
-end
-
-local function load_state()
-  local f = io.open(state_path(), "r")
+local function load_registry()
+  local f = io.open(registry_path(), "r")
   if not f then
-    return nil
+    return {}
   end
   local content = f:read("*a")
   f:close()
   local ok, data = pcall(vim.fn.json_decode, content)
-  return ok and data or nil
+  return (ok and type(data) == "table") and data or {}
+end
+
+local function save_registry(list)
+  local f = io.open(registry_path(), "w")
+  if f then
+    f:write(vim.fn.json_encode(list))
+    f:close()
+  end
+end
+
+---Records/refreshes a session. De-duped by port -- re-hosting on the same
+---port (shouldn't normally happen given random ports, but just in case)
+---replaces rather than duplicates the entry.
+local function add_session(port, file)
+  local list = load_registry()
+  local filtered = {}
+  for _, entry in ipairs(list) do
+    if entry.port ~= port then
+      table.insert(filtered, entry)
+    end
+  end
+  table.insert(filtered, { port = port, file = file, time = os.time() })
+  save_registry(filtered)
+end
+
+local function remove_session(port)
+  local list = load_registry()
+  local filtered = {}
+  for _, entry in ipairs(list) do
+    if entry.port ~= port then
+      table.insert(filtered, entry)
+    end
+  end
+  save_registry(filtered)
 end
 
 -- 64900-64999: outside the kernel's ephemeral/auto-assigned range
@@ -200,7 +233,31 @@ local function host_session()
       is_hosting = true
       vim.g.instant_root_port = port
       vim.cmd("InstantStartSession 127.0.0.1 " .. port)
-      save_state(port, file)
+      add_session(port, file)
+
+      -- Keep the registry entry's file live-updated as the host switches
+      -- files, so the picker never shows what you had open when you first
+      -- pressed <leader>iss instead of what's actually open now. Guarded on
+      -- is_hosting (not port) so it self-disables after <leader>isS stops
+      -- this host -- otherwise it'd silently resurrect the just-removed
+      -- registry entry the next time you switch buffers in this window.
+      vim.api.nvim_create_augroup("InstantHostFileTracking", { clear = true })
+      vim.api.nvim_create_autocmd("BufEnter", {
+        group = "InstantHostFileTracking",
+        callback = function()
+          if not is_hosting then
+            return
+          end
+          if vim.bo.buftype ~= "" then
+            return -- skip terminal/dashboard/help/etc.
+          end
+          local current_file = vim.fn.expand("%:p")
+          if current_file ~= "" then
+            add_session(port, current_file)
+          end
+        end,
+      })
+
       if target_name then
         print("Root session: hosting " .. target_name .. " on port " .. port .. " -- opening mirror window")
       else
@@ -246,20 +303,23 @@ local function poll_and_focus(target_name, attempts_left)
   end
 end
 
-local function join_session()
+---Shared by manual join (<leader>isj) and the session picker (<leader>isp)
+----- also what makes SWITCHING sessions a single action: if this window is
+---already in one, InstantStop leaves it first, then joins the new port, so
+---picking a different session from the list just works without a separate
+---explicit "leave" step.
+---@param fallback_file string? what to target if THIS window has no file of
+---its own open -- the picker passes the registry's record of what the host
+---was on when it started that session, so joining from a bare dashboard
+---still lands you on a real file instead of just leaving it on dashboard
+---with the session connected but nothing displayed.
+local function do_join(port, fallback_file)
   pcall(vim.cmd, "InstantStop")
-
-  local state = load_state()
-  local default_port = state and tostring(state.port) or ""
-  local port = vim.fn.input("Join port: ", default_port)
-  if port == "" then
-    print("No port given, join cancelled")
-    return
+  local file = vim.fn.expand("%:p")
+  if file == "" and fallback_file and fallback_file ~= "" then
+    file = fallback_file
   end
-  -- Target whatever file YOU already have open, same as the host: if
-  -- nothing is open, there's nothing to auto-focus, so just join and leave
-  -- the window as-is.
-  local target_name = expected_bufname(vim.fn.expand("%:p"))
+  local target_name = expected_bufname(file)
   vim.cmd("InstantJoinSession 127.0.0.1 " .. port)
   vim.g.instant_root_port = tonumber(port)
   if target_name then
@@ -269,13 +329,71 @@ local function join_session()
   end
 end
 
+local function join_session()
+  local list = load_registry()
+  local last = list[#list]
+  local default_port = last and tostring(last.port) or ""
+  local port = vim.fn.input("Join port: ", default_port)
+  if port == "" then
+    print("No port given, join cancelled")
+    return
+  end
+  do_join(port)
+end
+
 local function stop_session()
+  local port = vim.g.instant_root_port
   pcall(vim.cmd, "InstantStop")
   if is_hosting then
     vim.cmd("InstantStopServer")
     is_hosting = false
+    if port then
+      remove_session(port)
+    end
   end
   vim.g.instant_root_port = nil
+end
+
+---Picker of every known session on this machine (hosted here, ever, and
+---not yet explicitly stopped) -- select one to switch to it directly,
+---instead of remembering/typing/pasting a port. See do_join for why
+---switching is a single action even when already in a different session.
+local function pick_session()
+  local list = load_registry()
+  if #list == 0 then
+    vim.notify("instant.nvim: no known sessions -- host one with <leader>iss first", vim.log.levels.WARN)
+    return
+  end
+  -- Most recently started first.
+  table.sort(list, function(a, b)
+    return (a.time or 0) > (b.time or 0)
+  end)
+
+  local items = {}
+  for _, entry in ipairs(list) do
+    local age = os.time() - (entry.time or os.time())
+    local age_str = age < 60 and (age .. "s ago") or ((math.floor(age / 60)) .. "m ago")
+    local current = (vim.g.instant_root_port == entry.port) and " (current)" or ""
+    local label = string.format(
+      "port %d -- %s -- %s%s",
+      entry.port,
+      entry.file and entry.file ~= "" and vim.fn.fnamemodify(entry.file, ":t") or "no file",
+      age_str,
+      current
+    )
+    table.insert(items, { label = label, port = entry.port, file = entry.file })
+  end
+
+  vim.ui.select(items, {
+    prompt = "Join instant.nvim session:",
+    format_item = function(item)
+      return item.label
+    end,
+  }, function(choice)
+    if choice then
+      do_join(choice.port, choice.file)
+    end
+  end)
 end
 
 return {
@@ -294,5 +412,6 @@ return {
     { "<leader>iss", host_session, desc = "Instant: host session + open mirror window" },
     { "<leader>isj", join_session, desc = "Instant: join session (manual port)" },
     { "<leader>isS", stop_session, desc = "Instant: stop/leave" },
+    { "<leader>isp", pick_session, desc = "Instant: pick a session to join/switch to" },
   },
 }
