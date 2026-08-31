@@ -33,7 +33,11 @@
     | `<leader>cik` | Start new Kiro session |
 
 - Add this Keybindings:
-  ```
+
+  <details>
+  <summary>VS Code keybindings.json (click to expand)</summary>
+
+  ```json
     [
       {
         "command": "-vscode-neovim.send",
@@ -119,14 +123,20 @@
         "when": "terminalFocus",
       },
     ]
-
   ```
+
+  </details>
+
   - Required Extensions:
     - VS Code Neovim: https://marketplace.visualstudio.com/items?itemName=asvetliakov.vscode-neovim
     - Neovim UI Modifier: https://marketplace.visualstudio.com/items?itemName=JulianIaquinandi.nvim-ui-modifier
     - Bookmarks: https://marketplace.visualstudio.com/items?itemName=alefragnani.Bookmarks
   - My VS Code Settings:
-    ```
+
+    <details>
+    <summary>VS Code settings.json (click to expand)</summary>
+
+    ```json
       "extensions.experimental.affinity": {
           "asvetliakov.vscode-neovim": 1
       },
@@ -167,6 +177,9 @@
       ]
     }
     ```
+
+    </details>
+
   Note: on macos you probably need to add command(cmd) keybindings in order this config to work flawlessly.
 
 ## 🤖 Claude Code in Neovim
