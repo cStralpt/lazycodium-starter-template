@@ -7,20 +7,30 @@
 
 - Some handy shortcuts:
 
-  - `<C-c>` yank and move to clipboard,
-  - `<C-a>` select all lines
-  - multiple cursor alternative: in insert mode -> `<C-d>` -> repeat with dot key in normal mode
-  - ![nvim-multi-cursor](https://github.com/cStralpt/lazycodium-starter-template/assets/95400822/935bfec5-0873-4b47-9685-40ab437e8b87)
-  - For VS Code:
-    - Bookmark Toggle: `<leader>smm`
-    - Bookmark List for current file: `<leader>sml`
-    - Bookmark List for all files: `<leader>smL`
+  | Keybinding | Description |
+  | --- | --- |
+  | `<C-c>` | Yank and move to clipboard |
+  | `<C-a>` | Select all lines |
+  | `<C-d>` (insert mode, repeat with `.` in normal mode) | Multiple cursor alternative |
 
-  - AI Keybindings(VS Code):
-    - `<leader>cix` - Open ChatGPT Codex sidebar
-    - `<leader>cic` - Open Cursor bar
-    - `<leader>cia` - Start new Augment Chat
-    - `<leader>cik` - Start new Kiro session
+  ![nvim-multi-cursor](https://github.com/cStralpt/lazycodium-starter-template/assets/95400822/935bfec5-0873-4b47-9685-40ab437e8b87)
+
+  - For VS Code:
+
+    | Keybinding | Description |
+    | --- | --- |
+    | `<leader>smm` | Bookmark Toggle |
+    | `<leader>sml` | Bookmark List for current file |
+    | `<leader>smL` | Bookmark List for all files |
+
+  - AI Keybindings (VS Code):
+
+    | Keybinding | Description |
+    | --- | --- |
+    | `<leader>cix` | Open ChatGPT Codex sidebar |
+    | `<leader>cic` | Open Cursor bar |
+    | `<leader>cia` | Start new Augment Chat |
+    | `<leader>cik` | Start new Kiro session |
 
 - Add this Keybindings:
   ```
@@ -168,10 +178,12 @@ Two separate mechanisms, on purpose — see `lua/plugins/claude-code.lua`:
 
 ### Convenient bits worth knowing
 
-- **One Claude per tab, genuinely isolated.** Open a repo per tab, `<leader>ac` in each — they don't collide, don't share history, and toggling one never touches another.
-- **`<leader>ac` and `<leader>at` always converge.** `ac` spins up `claude` directly; `at` spins up a plain shell (`fish`, styled, real `cd` + tab-completion) so you can navigate first and run `claude` yourself. Whichever one you used, the *other* key toggles that exact same session afterward — no duplicate sessions, no guessing which key "owns" it.
-- **`<leader>aw` — float ↔ split, conversation intact.** Toggles the current tab's Claude between a right split and a centered float without killing the job — same scrollback, same context, just different chrome. The float is forced opaque (`winblend = 0`) regardless of the global transparency setting, so text stays readable.
-- **Mark it, then mention it — no copy/paste.** Drop vim marks (`ma`, `mb`, ...) on lines you have feedback on while reading code, then `<leader>aM` sends every marked line as an `@file:line` reference straight into that tab's Claude in one shot. `<leader>al` does the same for just the current line. `<leader>as` (visual) sends the selected code block with its file:line range. All three type directly into the terminal job (`chansend`) — works whether that tab is running `claude` or you're mid-`at`-shell, no MCP required.
-- **Jump in and out without breaking flow.** `<C-h/j/k/l>` move between the Claude window and your code from *either* side, even mid-terminal-insert. Landing in the Claude window auto-enters insert (ready to type immediately). Plain `<Esc>` still interrupts Claude instantly — no delay-inducing `<Esc><Esc>` mapping in the way. `<C-g>` drops to terminal-normal mode if `<C-\><C-n>` doesn't reach your terminal/keyboard layout.
-- **`<C-/>` — a *styled* embedded terminal.** Runs `fish` (not bash) inside a real Neovim split, so it looks like your actual terminal instead of a bare shell — while staying toggleable/hideable like any Neovim window.
-- **Review session, when you want it.** `<leader>aIc/aIf/aIr/aIC/aIm` manage the shared MCP session; `aIb/aIl/aIM` add context to it; `aIa/aId` accept/reject its inline diffs. Reach for this specifically when you want Claude reading your live buffer state and proposing diffs you review in Neovim itself — everyday chat lives in the per-tab sessions above.
+| Keybinding | What it does |
+| --- | --- |
+| `<leader>ac` | Per-tab Claude, genuinely isolated. Open a repo per tab, `<leader>ac` in each — they don't collide, don't share history, and toggling one never touches another. |
+| `<leader>ac` / `<leader>at` | Always converge. `ac` spins up `claude` directly; `at` spins up a plain shell (`fish`, styled, real `cd` + tab-completion) so you can navigate first and run `claude` yourself. Whichever one you used, the *other* key toggles that exact same session afterward — no duplicate sessions, no guessing which key "owns" it. |
+| `<leader>aw` | Float ↔ split, conversation intact. Toggles the current tab's Claude between a right split and a centered float without killing the job — same scrollback, same context, just different chrome. The float is forced opaque (`winblend = 0`) regardless of the global transparency setting, so text stays readable. |
+| `<leader>aM` / `<leader>al` / `<leader>as` | Mark it, then mention it — no copy/paste. Drop vim marks (`ma`, `mb`, ...) on lines you have feedback on while reading code, then `<leader>aM` sends every marked line as an `@file:line` reference straight into that tab's Claude in one shot. `<leader>al` does the same for just the current line. `<leader>as` (visual) sends the selected code block with its file:line range. All three type directly into the terminal job (`chansend`) — works whether that tab is running `claude` or you're mid-`at`-shell, no MCP required. |
+| `<C-h/j/k/l>`, `<Esc>`, `<C-g>` | Jump in and out without breaking flow. `<C-h/j/k/l>` move between the Claude window and your code from *either* side, even mid-terminal-insert. Landing in the Claude window auto-enters insert (ready to type immediately). Plain `<Esc>` still interrupts Claude instantly — no delay-inducing `<Esc><Esc>` mapping in the way. `<C-g>` drops to terminal-normal mode if `<C-\><C-n>` doesn't reach your terminal/keyboard layout. |
+| `<C-/>` | A *styled* embedded terminal. Runs `fish` (not bash) inside a real Neovim split, so it looks like your actual terminal instead of a bare shell — while staying toggleable/hideable like any Neovim window. |
+| `<leader>aIc/aIf/aIr/aIC/aIm`, `aIb/aIl/aIM`, `aIa/aId` | Review session, when you want it. `aIc/aIf/aIr/aIC/aIm` manage the shared MCP session; `aIb/aIl/aIM` add context to it; `aIa/aId` accept/reject its inline diffs. Reach for this specifically when you want Claude reading your live buffer state and proposing diffs you review in Neovim itself — everyday chat lives in the per-tab sessions above. |
