@@ -91,7 +91,15 @@ end
 ---rooted at the project dir) the first time this is called.
 function M.toggle()
   ensure_session()
-  local cmd = ("tmux attach -t %s"):format(session)
+  -- Table form, not a string: shared_terminal.lua monkey-patches
+  -- vim.fn.termopen to wrap every STRING command through ITS OWN tmux
+  -- mirroring layer whenever a collab root session is active (<leader>iss).
+  -- That would nest our "tmux attach" inside a second, outer tmux session
+  -- whose job is to run that attach from a fresh detached pane -- which
+  -- exits almost immediately, closing the float right after it opens.
+  -- Table-form commands are documented (shared_terminal.lua) to pass
+  -- through that patch untouched, so this sidesteps it entirely.
+  local cmd = { "tmux", "attach", "-t", session }
   local terminal = Snacks.terminal.focus(cmd, {
     win = {
       position = "float",
