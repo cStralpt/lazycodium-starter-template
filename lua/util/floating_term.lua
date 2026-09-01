@@ -77,8 +77,15 @@ local function ensure_session()
   local canonical = canonical_session()
   if not session_alive(canonical) then
     vim.fn.system({ "tmux", "new-session", "-d", "-s", canonical, "-c", LazyVim.root(), fish })
-    vim.fn.system({ "tmux", "set-option", "-t", canonical, "default-shell", fish })
-    vim.fn.system({ "tmux", "set-option", "-t", canonical, "default-command", fish })
+    -- -g (global, not -t canonical): a session-scoped option set on the
+    -- canonical session does NOT propagate to a grouped session (verified
+    -- directly -- new-window run against a grouped "mine" session fell back
+    -- to bash), so <leader>tn from a collaborator's own grouped session
+    -- would silently miss it. Global only affects panes/windows created
+    -- WITHOUT an explicit command, so it can't clobber shared_terminal.lua's
+    -- own sessions (those always pass an explicit cmd).
+    vim.fn.system({ "tmux", "set-option", "-g", "default-shell", fish })
+    vim.fn.system({ "tmux", "set-option", "-g", "default-command", fish })
     if not vim.g.instant_root_port then
       owned_sessions[canonical] = true
     end
