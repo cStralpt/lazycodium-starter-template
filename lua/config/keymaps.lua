@@ -64,21 +64,29 @@ map("t", "<C-l>", "<cmd>wincmd l<cr>", { desc = "Go to Right Window" })
 -- portable and unused by Claude Code, so bind it to the same action.
 map("t", "<C-g>", "<C-\\><C-n>", { desc = "Exit terminal mode (terminal-normal)" })
 
--- LazyVim's default <C-/> opens an EMBEDDED terminal buffer (Snacks.terminal,
--- toggleable/hideable like any Neovim window) but runs $SHELL, which is bash
--- here -- hence the "bare" look, even though you interactively use fish
--- (styled prompt, theme, etc.) everywhere else. Run fish in it instead so
--- the embedded terminal actually looks like your terminal.
-local function open_terminal()
-  local shell = vim.fn.executable("fish") == 1 and "fish" or nil
-  -- snacks.nvim defaults to a FLOATING window whenever `cmd` is non-nil
-  -- (assumes a one-off command), and only defaults to "bottom" when cmd is
-  -- nil (a plain shell). Since we always pass an explicit shell now, pin
-  -- position explicitly or it silently floats instead of splitting.
-  Snacks.terminal.focus(shell, { cwd = LazyVim.root(), win = { position = "bottom" } })
-end
-map({ "n", "t" }, "<C-/>", open_terminal, { desc = "Terminal (fish, embedded)" })
-map({ "n", "t" }, "<C-_>", open_terminal, { desc = "which_key_ignore" })
+-- <C-/> toggles a near-fullscreen floating terminal that's actually a
+-- persistent tmux session (lua/util/floating_term.lua) -- so, unlike a
+-- single bare Snacks terminal buffer, it supports real splits (<leader>ts/tv)
+-- and tabs/terminal groups (<leader>tn, <leader>t]/t[) via tmux itself,
+-- while state (running processes, scrollback) survives hiding/reshowing
+-- untouched.
+local floating_term = require("util.floating_term")
+map({ "n", "t" }, "<C-/>", floating_term.toggle, { desc = "Terminal (floating, tmux)" })
+map({ "n", "t" }, "<C-_>", floating_term.toggle, { desc = "which_key_ignore" })
+
+-- These are normal-mode only (not "t"): <leader> is space, which you type
+-- constantly inside a shell, so mapping it in terminal-insert mode would
+-- break normal typing. Drop into terminal-normal mode first (<C-g>, mapped
+-- above) to reach them while the floating terminal is focused.
+map("n", "<leader>ts", floating_term.split_horizontal, { desc = "Terminal: split pane (horizontal)" })
+map("n", "<leader>tv", floating_term.split_vertical, { desc = "Terminal: split pane (vertical)" })
+map("n", "<leader>tn", floating_term.new_tab, { desc = "Terminal: new tab (terminal group)" })
+map("n", "<leader>tx", floating_term.close_pane, { desc = "Terminal: close pane" })
+-- Not ]t/[t: LazyVim already claims those for todo-comments.nvim, and the
+-- `map()` wrapper above silently skips ours whenever a lazy-loaded plugin
+-- keymap already owns the lhs -- so ]t/[t would appear to do nothing.
+map("n", "<leader>t]", floating_term.next_tab, { desc = "Terminal: next tab" })
+map("n", "<leader>t[", floating_term.prev_tab, { desc = "Terminal: prev tab" })
 
 local function neovimMappings()
   -- map(
