@@ -92,6 +92,69 @@ local function snapshot_path(port)
   return vim.fn.stdpath("cache") .. "/instant-tabsnapshot-" .. port .. ".json"
 end
 
+---Deletes any pre-existing event log/snapshot for `port` and clears this
+---process's own tracking of it, so a NEW session starting on a port
+---removes all risk of inheriting an OLD, unrelated session's stale state
+---for that same port number (rare even with a wide port range, but a
+---real, confirmed-possible failure mode otherwise -- see random_port()'s
+---comment in lua/plugins/instant.lua). Exposed because instant.lua calls
+---this at the exact moment a NEW host session starts, before writing its
+---own fresh snapshot.
+function M.reset(port)
+  os.remove(event_path(port))
+  os.remove(snapshot_path(port))
+  last_seen[port] = nil
+end
+
+---Finds a real file (buftype "") in `tabpage`, searching EVERY window in
+---it -- not just nvim_tabpage_get_win's single "current" window. That
+---distinction is exactly what caused a real, confirmed bug: every tab in
+---this whole feature's workflow is a file window split next to a Claude
+---terminal, and Neovim tracks only ONE "current" window per tab (whichever
+---was last focused). If that happens to be the terminal split -- extremely
+---likely, since that's where you actually type -- nvim_tabpage_get_win()
+---returns the terminal, its buftype isn't "", and the file sitting right
+---next to it was invisible to this code entirely: silently recorded as
+---"no file here" in the snapshot despite a real file being right there.
+local function find_file_in_tabpage(tabpage)
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tabpage)) do
+    local buf = vim.api.nvim_win_get_buf(win)
+    if vim.bo[buf].buftype == "" then
+      local name = vim.api.nvim_buf_get_name(buf)
+      if name ~= "" then
+        return name
+      end
+    end
+  end
+  return nil
+end
+M.find_file_in_tabpage = find_file_in_tabpage
+
+---Same search as find_file_in_tabpage, but returns the WINDOW handle
+---instead of the filename -- for actually WRITING an incoming file update
+---into the right place. apply_event's "file" replay and
+---bootstrap_from_snapshot both used to call nvim_tabpage_get_win()
+---directly instead of this, which has the identical bug find_file_in_tabpage
+---was written to fix, just on the writing side instead of the reading
+---side: a remote file update would land in whichever window Vim considers
+---"current" for that tab -- the Claude terminal, if that's where the
+---cursor was last -- silently updating the WRONG window while the actual
+---file window sitting right next to it stayed untouched. That's exactly
+---why a window would look permanently "stuck" on whatever it opened
+---locally: every incoming update from elsewhere was being written into the
+---terminal pane instead of the file pane. Falls back to
+---nvim_tabpage_get_win() only if the tab has no real file window at all
+---(e.g. every window in it is a terminal) -- updating something is better
+---than updating nothing in that edge case.
+local function find_file_window_in_tabpage(tabpage)
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tabpage)) do
+    if vim.bo[vim.api.nvim_win_get_buf(win)].buftype == "" then
+      return win
+    end
+  end
+  return vim.api.nvim_tabpage_get_win(tabpage)
+end
+
 ---Captures every tab's current file (or nil for a blank/special one) into
 ---a per-port snapshot file. Exposed (not local) because instant.lua calls
 ---this directly at the exact moment a session starts hosting -- see the
@@ -100,16 +163,7 @@ end
 function M.write_snapshot(port)
   local snap = {}
   for _, t in ipairs(vim.api.nvim_list_tabpages()) do
-    local win = vim.api.nvim_tabpage_get_win(t)
-    local buf = vim.api.nvim_win_get_buf(win)
-    local file = nil
-    if vim.bo[buf].buftype == "" then
-      local name = vim.api.nvim_buf_get_name(buf)
-      if name ~= "" then
-        file = name
-      end
-    end
-    table.insert(snap, { file = file })
+    table.insert(snap, { file = find_file_in_tabpage(t) })
   end
   local f = io.open(snapshot_path(port), "w")
   if f then
@@ -129,6 +183,20 @@ local function read_snapshot(port)
   return (ok and type(data) == "table") and data or nil
 end
 
+-- NOTE: none of these three re-write the snapshot anymore (an earlier
+-- version did). The snapshot is written EXACTLY ONCE, by instant.lua at
+-- the moment a session starts hosting, and covers only what predates the
+-- event system entirely (tabs open before anyone had a root session, so
+-- they never fired these hooks in the first place). Re-writing it on every
+-- change was actively harmful: whichever window's write landed LAST won,
+-- unconditionally overwriting the file with THAT window's own view --
+-- which could easily be less complete than another window's if it hadn't
+-- caught up on recent events yet, silently discarding tabs from the
+-- on-disk snapshot. Everything that happens AFTER hosting starts belongs
+-- to the event log instead, which is append-only and can't lose history
+-- that way -- see M.install's bootstrap logic, which replays the FULL log
+-- for a freshly-joining window rather than trusting the snapshot to still
+-- be current.
 local function broadcast_tabnew()
   local port = vim.g.instant_root_port
   if not port or replaying then
@@ -136,7 +204,6 @@ local function broadcast_tabnew()
   end
   append_event(port, { kind = "new", pid = my_pid })
   bump_last_seen(port)
-  M.write_snapshot(port)
 end
 
 -- BufNewFile/BufReadPost -- NOT BufEnter -- so this fires only when a file
@@ -157,7 +224,6 @@ local function broadcast_file()
   end
   append_event(port, { kind = "file", pid = my_pid, tab = vim.api.nvim_tabpage_get_number(0), file = file })
   bump_last_seen(port)
-  M.write_snapshot(port)
 end
 
 -- TabClosed's <afile> is documented to hold the CLOSED tab's number
@@ -173,7 +239,6 @@ local function broadcast_tabclosed(args)
   end
   append_event(port, { kind = "closed", pid = my_pid, tab = closed_tab })
   bump_last_seen(port)
-  M.write_snapshot(port)
 end
 
 -- Poll for a buffer with EXACTLY `file` as its name (the absolute-path
@@ -215,25 +280,46 @@ end
 -- instant.nvim's own mechanism, separately -- before moving to the next),
 -- all WITHOUT changing which tab is currently active, other than landing
 -- wherever bootstrap naturally leaves off since this runs once at join
--- time before you've navigated anywhere yourself.
-local function bootstrap_from_snapshot(port)
+-- time before you've navigated anywhere yourself. Only covers what
+-- predates the event system (see the comment above broadcast_tabnew) --
+-- `on_done` is what lets the caller chain the FULL event-log replay after
+-- this finishes, to pick up everything since.
+local function bootstrap_from_snapshot(port, on_done)
   local snap = read_snapshot(port)
   if not snap or #snap == 0 then
+    if on_done then
+      on_done()
+    end
     return
   end
   local function do_tab(i)
     if i > #snap then
+      if on_done then
+        on_done()
+      end
       return
     end
-    replaying = true
+    -- `replaying` only needs to cover the SYNCHRONOUS :tabnew call (it
+    -- fires TabNew, which broadcast_tabnew hooks -- has to be suppressed
+    -- to avoid re-broadcasting our own replay). nvim_win_set_buf below
+    -- does NOT trigger BufNewFile/BufReadPost (no disk read happens, it's
+    -- just switching which already-loaded buffer a window shows) -- so it
+    -- doesn't need guarding, and holding `replaying` across the ASYNC
+    -- poll_for_buffer wait (up to 30s per tab, compounding across however
+    -- many tabs are in the snapshot) was purely harmful: it silently
+    -- suppressed any of YOUR OWN genuine actions (opening a file,
+    -- creating a tab) for as long as that window stayed open, causing
+    -- exactly the "sometimes a window doesn't get synced" flakiness this
+    -- fixes.
     if vim.fn.tabpagenr("$") < i then
+      replaying = true
       pcall(vim.cmd, "tabnew")
+      replaying = false
     end
     local tabpages = vim.api.nvim_list_tabpages()
-    local win = vim.api.nvim_tabpage_get_win(tabpages[i])
+    local win = find_file_window_in_tabpage(tabpages[i])
     local file = snap[i].file
     if not file then
-      replaying = false
       do_tab(i + 1)
       return
     end
@@ -241,15 +327,26 @@ local function bootstrap_from_snapshot(port)
       if buf then
         pcall(vim.api.nvim_win_set_buf, win, buf)
       end
-      replaying = false
       do_tab(i + 1)
     end)
   end
   do_tab(1)
 end
 
-local function apply_event(event)
+---`on_done` (optional) is what lets a caller that needs events applied
+---STRICTLY IN ORDER (replay_range below) wait for each one to actually
+---finish -- important there because a "closed" event's tab NUMBER only
+---makes sense relative to whichever tabs already exist at that point in
+---the sequence; applying two events out of order (e.g. a later "file" for
+---tab 3 alongside an unfinished earlier "closed" of tab 2) could target
+---the wrong tab entirely. The regular incremental poll (M.install) doesn't
+---pass one -- events arriving one at a time, a poll tick apart, don't have
+---that ordering risk.
+local function apply_event(event, on_done)
   if event.pid == my_pid then
+    if on_done then
+      on_done()
+    end
     return
   end
   if event.kind == "new" then
@@ -258,21 +355,31 @@ local function apply_event(event)
       pcall(vim.cmd, "tabnew")
       replaying = false
     end)
+    if on_done then
+      on_done()
+    end
   elseif event.kind == "file" then
     -- Don't have that many tabs yet -- its "new" event should have arrived
     -- first (same shared log, processed in order); if it was somehow
     -- missed, just drop this rather than guess where to put it.
     if vim.fn.tabpagenr("$") < event.tab then
+      if on_done then
+        on_done()
+      end
       return
     end
     local tabpages = vim.api.nvim_list_tabpages()
-    local win = vim.api.nvim_tabpage_get_win(tabpages[event.tab])
-    replaying = true
+    local win = find_file_window_in_tabpage(tabpages[event.tab])
+    -- No `replaying` guard needed here -- nvim_win_set_buf doesn't trigger
+    -- BufNewFile/BufReadPost (see bootstrap_from_snapshot's comment above
+    -- for why holding it across this async wait was actively harmful).
     poll_for_buffer(expected_bufname(event.file), 150, function(buf)
       if buf then
         pcall(vim.api.nvim_win_set_buf, win, buf)
       end
-      replaying = false
+      if on_done then
+        on_done()
+      end
     end)
   elseif event.kind == "closed" then
     -- Out of range (already closed some other way, or never had that many
@@ -283,7 +390,38 @@ local function apply_event(event)
       pcall(vim.cmd, event.tab .. "tabclose")
       replaying = false
     end)
+    if on_done then
+      on_done()
+    end
+  elseif on_done then
+    on_done()
   end
+end
+
+---Replays event-log lines `from`..`to` (inclusive), IN ORDER, waiting for
+---each to finish before starting the next -- see apply_event's `on_done`
+---comment for why order matters here specifically. Used both for a fresh
+---window's full-history catchup and, functionally the same thing, the
+---regular incremental poll in M.install (which just always happens to
+---have a range of length <= a few, one poll tick apart).
+local function replay_range(lines, from, to, on_done)
+  local function step(i)
+    if i > to then
+      if on_done then
+        on_done()
+      end
+      return
+    end
+    local ok, event = pcall(vim.fn.json_decode, lines[i])
+    if ok then
+      apply_event(event, function()
+        step(i + 1)
+      end)
+    else
+      step(i + 1)
+    end
+  end
+  step(from)
 end
 
 -- Module-level, NOT local to M.install(): a vim.loop/vim.uv timer handle
@@ -305,36 +443,56 @@ function M.install()
   vim.api.nvim_create_autocmd({ "BufNewFile", "BufReadPost" }, { callback = broadcast_file })
   vim.api.nvim_create_autocmd("TabClosed", { callback = broadcast_tabclosed })
 
+  -- port -> true while EITHER the initial bootstrap+full-log-replay OR an
+  -- ordinary incremental catchup is still running for it (both are async
+  -- now, via replay_range). Without this, a still-in-flight replay's
+  -- last_seen[port] wouldn't be updated yet when the NEXT 400ms tick
+  -- fires, so that tick would see the same stale last_seen and start a
+  -- SECOND, overlapping replay of an overlapping (or, for the bootstrap
+  -- case, entirely duplicate) range -- so this just makes "already
+  -- replaying this port" a reason to skip a tick, the same way an
+  -- ordinary mutex would.
+  local processing = {}
+
   poll_timer = vim.loop.new_timer()
   poll_timer:start(
     400,
     400,
     vim.schedule_wrap(function()
       local port = vim.g.instant_root_port
-      if not port then
+      if not port or processing[port] then
         return
       end
       local lines = read_lines(port)
       if last_seen[port] == nil then
-        -- Freshly seeing this port: bootstrap from whatever snapshot
-        -- exists (the host's full tab layout at the moment it started
-        -- hosting -- see M.write_snapshot) BEFORE switching to incremental
-        -- event tracking, so pre-existing tabs the event log never saw
-        -- (created before anyone had a root session at all) still show up.
-        last_seen[port] = #lines
-        bootstrap_from_snapshot(port)
+        -- Freshly seeing this port: apply the snapshot (the host's tab
+        -- layout at the moment it started hosting -- covers only what
+        -- predates the event system, see M.write_snapshot), THEN replay
+        -- the log from its very START (not from "now") -- otherwise
+        -- anything that happened between the original snapshot and THIS
+        -- window joining (e.g. some other window opening a new tab in the
+        -- meantime) would be silently skipped forever: this window's
+        -- catchup baseline would already be past it before ever seeing it.
+        -- That gap was a real, confirmed bug -- one window ending up
+        -- permanently missing a tab every other window has.
+        processing[port] = true
+        local target = #lines
+        bootstrap_from_snapshot(port, function()
+          replay_range(lines, 1, target, function()
+            last_seen[port] = target
+            processing[port] = nil
+          end)
+        end)
         return
       end
       if #lines <= last_seen[port] then
         return
       end
-      for i = last_seen[port] + 1, #lines do
-        local ok, event = pcall(vim.fn.json_decode, lines[i])
-        if ok then
-          apply_event(event)
-        end
-      end
-      last_seen[port] = #lines
+      processing[port] = true
+      replay_range(lines, last_seen[port] + 1, #lines, function()
+        last_seen[port] = #lines
+        processing[port] = nil
+      end)
     end)
   )
 end

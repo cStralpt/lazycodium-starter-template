@@ -59,12 +59,65 @@ local function remove_session(port)
   save_registry(filtered)
 end
 
--- 64900-64999: outside the kernel's ephemeral/auto-assigned range
+---What file <leader>iss/isj should target, WITHOUT assuming the current
+---buffer represents it. It doesn't, reliably: this whole feature's normal
+---layout is a file window split next to a Claude terminal, and if your
+---cursor happens to be in the terminal pane (likely -- that's where you
+---type) when you press the key, vim.fn.expand("%:p") returns the
+---terminal's name, not the file's -- a confirmed, real bug (a mirror
+---spawned while focused in the terminal had nothing to target and landed
+---on a blank dashboard, despite a real file sitting right next to it).
+---Falls back to searching every window in the CURRENT tab for a real file
+---if the current buffer itself isn't one.
+local function current_tab_file()
+  local file = vim.fn.expand("%:p")
+  if file ~= "" and vim.bo.buftype == "" then
+    return file
+  end
+  return require("util.shared_tabs").find_file_in_tabpage(vim.api.nvim_get_current_tabpage()) or ""
+end
+
+-- 61000-65535: outside the kernel's ephemeral/auto-assigned range
 -- (32768-60999 on this machine, per /proc/sys/net/ipv4/ip_local_port_range),
 -- so nothing else on this laptop grabs these ports on its own.
+--
+-- This used to be a 100-value range (64900-64999) -- deliberately widened
+-- to ~4500 values after finding that was a real, significant bug: every
+-- file this feature writes (shared_tabs.lua's event log, its tab snapshot,
+-- shared_terminal.lua's tmux session name) is named BY PORT NUMBER. With
+-- only 100 possible values, the birthday paradox makes a collision with an
+-- earlier, already-abandoned session's port likely fast -- ~85% after just
+-- 20 uses of <leader>iss in one real session, easily reached. A collision
+-- doesn't just risk EADDRINUSE (already retried below); it means a NEW
+-- session inherits an OLD, unrelated session's stale event log and
+-- snapshot, silently replaying/bootstrapping garbage from it -- explaining
+-- exactly "works, then randomly doesn't, then works again": it only broke
+-- on draws that happened to collide with old state. See also
+-- host_session()'s explicit stale-file cleanup below, which removes this
+-- risk entirely rather than just making it rarer.
 local function random_port()
   math.randomseed(vim.loop.hrtime())
-  return math.random(64900, 64999)
+  return math.random(61000, 65535)
+end
+
+---Actually checks whether `port` is free instead of picking a random
+---number and only finding out it's taken when InstantStartServer itself
+---fails. bind() alone doesn't reliably detect this -- confirmed directly:
+---two separate sockets can both bind() the same port successfully (looks
+---like SO_REUSEADDR), the conflict only surfaces at listen() -- so this
+---tests through to listen(), matching what InstantStartServer itself
+---actually does. Doesn't fully eliminate the race (something else could
+---grab the port in the gap between this check and the real
+---InstantStartServer call moments later) -- the EADDRINUSE-triggered retry
+---loop below still exists as the actual guarantee -- but avoids picking an
+---already-listened-on port in the first place rather than only discovering
+---it after the fact.
+local function port_available(port)
+  local sock = vim.loop.new_tcp()
+  sock:bind("127.0.0.1", port)
+  local ok = sock:listen(1, function() end)
+  sock:close()
+  return ok == 0
 end
 
 -- How the plugin actually shares buffers (from reading its source, not the
@@ -204,7 +257,7 @@ local is_hosting = false
 
 -- Retries a few times in the rare case the random port is already taken.
 local function host_session()
-  local file = vim.fn.expand("%:p")
+  local file = current_tab_file()
   local target_name = expected_bufname(file)
 
   -- If THIS window is already part of a session -- as the original host, or
@@ -229,6 +282,9 @@ local function host_session()
 
   for _ = 1, 5 do
     local port = random_port()
+    if not port_available(port) then
+      goto continue
+    end
     local ok = pcall(vim.cmd, "InstantStartServer 127.0.0.1 " .. port)
     if ok then
       is_hosting = true
@@ -236,14 +292,20 @@ local function host_session()
       vim.cmd("InstantStartSession 127.0.0.1 " .. port)
       add_session(port, file)
 
-      -- Snapshot the FULL current tab layout right now, at the exact
-      -- moment this window becomes a root session -- not just future
-      -- changes. Tabs opened before this point never fired
-      -- shared_tabs.lua's TabNew/BufEnter hooks (they early-return when
-      -- there's no root_port yet), so without an explicit snapshot here,
-      -- a mirror spawned a moment later would only ever have the ONE tab
-      -- you happened to be on, not the two or three you already had open.
-      require("util.shared_tabs").write_snapshot(port)
+      -- Clear any stale event log/snapshot a PREVIOUS, unrelated session
+      -- may have left behind under this exact port number -- see
+      -- random_port()'s comment above for why this was a real, confirmed
+      -- bug (a new session silently inheriting old garbage state), not
+      -- just theoretical. Then snapshot the FULL current tab layout right
+      -- now, at the exact moment this window becomes a root session -- not
+      -- just future changes. Tabs opened before this point never fired
+      -- shared_tabs.lua's TabNew/BufReadPost hooks (they early-return when
+      -- there's no root_port yet), so without an explicit snapshot here, a
+      -- mirror spawned a moment later would only ever have the ONE tab you
+      -- happened to be on, not the two or three you already had open.
+      local shared_tabs = require("util.shared_tabs")
+      shared_tabs.reset(port)
+      shared_tabs.write_snapshot(port)
 
       -- Keep the registry entry's file live-updated as the host switches
       -- files, so the picker never shows what you had open when you first
@@ -281,6 +343,7 @@ local function host_session()
       spawn_mirror_window(port, target_name)
       return
     end
+    ::continue::
   end
   print("Could not find a free port after 5 attempts")
 end
@@ -325,7 +388,7 @@ end
 ---with the session connected but nothing displayed.
 local function do_join(port, fallback_file)
   pcall(vim.cmd, "InstantStop")
-  local file = vim.fn.expand("%:p")
+  local file = current_tab_file()
   if file == "" and fallback_file and fallback_file ~= "" then
     file = fallback_file
   end

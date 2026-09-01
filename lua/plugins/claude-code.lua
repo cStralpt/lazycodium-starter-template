@@ -140,6 +140,33 @@ local function tmux_tab_session_name()
   return ("%s-root%s-tab%d"):format(label, tostring(vim.g.instant_root_port), tab_id())
 end
 
+---Retries the has-session/send-keys check instead of testing once and
+---giving up immediately. A single immediate check has a real, confirmed
+---timing race: if the OTHER window's <leader>ac was JUST pressed, its own
+---termopen -> shell -> "tmux new-session" chain may not have finished
+---creating the session yet -- an immediate check fails not because
+---anything's misnamed (verified directly: root_port and tab_id match
+---exactly between a host and its mirror when checked via RPC) but purely
+---because the session doesn't exist YET. This is what "works, then
+---randomly doesn't, for no apparent reason" actually was. ~3s of retrying
+---(10 attempts, 300ms apart) covers that race without hanging indefinitely
+---on a session that's genuinely never going to exist.
+local function try_send_via_tmux(session, text, attempts_left, on_fail)
+  vim.fn.system({ "tmux", "has-session", "-t", session })
+  if vim.v.shell_error == 0 then
+    vim.fn.system({ "tmux", "send-keys", "-t", session, "-l", text })
+    vim.notify("Sent to this tab's terminal (open in another window)", vim.log.levels.INFO)
+    return
+  end
+  if attempts_left > 0 then
+    vim.defer_fn(function()
+      try_send_via_tmux(session, text, attempts_left - 1, on_fail)
+    end, 300)
+  else
+    on_fail()
+  end
+end
+
 ---Type text directly into THIS tab's terminal job (same effect as you typing
 ---it yourself -- works whether "claude" or a plain shell is running there,
 ---no MCP required). This is what keeps mention/send scoped to the Claude
@@ -162,12 +189,10 @@ local function send_to_tab_terminal(text)
   if not alive then
     local session = tmux_tab_session_name()
     if session then
-      vim.fn.system({ "tmux", "has-session", "-t", session })
-      if vim.v.shell_error == 0 then
-        vim.fn.system({ "tmux", "send-keys", "-t", session, "-l", text })
-        vim.notify("Sent to this tab's terminal (open in another window)", vim.log.levels.INFO)
-        return
-      end
+      try_send_via_tmux(session, text, 10, function()
+        vim.notify("No Claude terminal in this tab yet (<leader>ac to start one)", vim.log.levels.WARN)
+      end)
+      return
     end
     vim.notify("No Claude terminal in this tab yet (<leader>ac to start one)", vim.log.levels.WARN)
     return
