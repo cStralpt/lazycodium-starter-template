@@ -251,7 +251,10 @@ end
 ---@param count integer? explicit slot (vim.v.count); nil/0 = focused agent
 ---@param on_sent function? called only once the text was actually delivered, so
 ---callers can clear state (e.g. send marks) that must survive a failed send
-function M.send(text, count, on_sent)
+---@param submit boolean? also press Enter -- only for fixed commands (e.g.
+---"/model") where there's nothing to review before submitting; free-form text
+---always stays in the prompt for you to check first
+function M.send(text, count, on_sent, submit)
   local counted = count ~= nil and count > 0
 
   local function deliver(agent)
@@ -259,6 +262,9 @@ function M.send(text, count, on_sent)
     if vim.v.shell_error ~= 0 then
       vim.notify(("Agent %d (%s) is gone"):format(agent.slot, agent.pane), vim.log.levels.WARN)
       return
+    end
+    if submit then
+      vim.fn.system({ "tmux", "send-keys", "-t", agent.pane, "Enter" })
     end
     if not counted then
       M.focus(agent)
@@ -296,6 +302,36 @@ function M.send(text, count, on_sent)
   vim.notify(("Started %s -- sending once it's ready"):format(agent.name))
   when_ready(agent, function()
     deliver(agent)
+  end)
+end
+
+---Same picker `<leader>aIm` (ClaudeCodeSelectModel) shows -- literally the
+---same table, pulled from claudecode.nvim's own config -- but that command
+---can only ever OPEN A NEW terminal with `--model`, it has no way to retarget
+---a live session. This instead sends "/model <value>" into the active
+---agent's own pane, which is how you actually change a running agent's model.
+---@param count integer? explicit slot (vim.v.count); nil/0 = focused agent
+function M.select_model(count)
+  local ok, cc_config = pcall(require, "claudecode.config")
+  local models = (ok and cc_config.defaults.models)
+    or {
+      { name = "Claude Opus (Latest)", value = "opus" },
+      { name = "Claude Opus (Latest, 1M context)", value = "opus[1m]" },
+      { name = "Claude Sonnet (Latest)", value = "sonnet" },
+      { name = "Claude Sonnet (Latest, 1M context)", value = "sonnet[1m]" },
+      { name = "Claude Haiku (Latest)", value = "haiku" },
+      { name = "Default (account recommended)", value = "default" },
+    }
+  vim.ui.select(models, {
+    prompt = "Select Claude model:",
+    format_item = function(item)
+      return item.name
+    end,
+  }, function(choice)
+    if not choice then
+      return
+    end
+    M.send("/model " .. choice.value, count, nil, true)
   end)
 end
 

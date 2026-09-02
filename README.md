@@ -236,10 +236,19 @@ The number is printed on the statusline pill, so it's read, not memorised.
 | `<leader>mm` | Toggle a send-mark on this line (visual: every line in the selection) |
 | `<leader>mc` | Clear all send-marks in this buffer |
 | `<leader>aM` | Send all marked lines, grouped into contiguous `file:start-end` blocks; marks clear only once the send succeeds |
+| `<leader>ai` | Switch the active agent's model — same picker as `<leader>aIm`, but sends `/model <value>` into its live session instead of opening a new terminal |
 
 Sends go to the **focused** agent, which is simply tmux's active pane — whichever
 one you last touched. Two Neovim windows looking at the same group therefore agree
 on it with nothing to sync.
+
+`<leader>ai` reuses `claudecode.nvim`'s own model list (`claudecode.config.defaults.models`)
+so the two pickers never drift apart, but it can't reuse `ClaudeCodeSelectModel` itself —
+that command only knows how to spawn a fresh `ClaudeCode --model <x>` terminal, it has no
+way to retarget a session that's already running. Sending `/model <value>` as text into the
+agent's own pane is the only way to change a live agent's model, which is also why this is
+auto-submitted (Enter included) rather than left in the prompt like every other send — there's
+no text here to review, just a command to run.
 
 ### Colour
 

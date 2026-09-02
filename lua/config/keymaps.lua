@@ -122,6 +122,12 @@ map("n", "<leader>am", function()
   agents.move_to_group(vim.v.count)
 end, { desc = "Claude: move agent to a group" })
 
+-- Same picker <leader>aIm shows, but targets the active tmux agent's live
+-- session instead of spawning a new terminal.
+map("n", "<leader>ai", function()
+  agents.select_model(vim.v.count)
+end, { desc = "Claude: switch model (active agent)" })
+
 -- Sends. Each takes an optional count -- `2<leader>as` delivers to agent 2
 -- without moving focus -- and the number is printed on the statusline pill, so
 -- it is read rather than memorised.
