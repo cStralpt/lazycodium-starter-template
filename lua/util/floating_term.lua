@@ -168,6 +168,14 @@ end
 ---fresh `terminal` object from Snacks rather than a value we already hold.
 local current_win = nil
 
+---Forward-declared: `_G.FloatingTermTabClick` below calls this, but as a
+---GLOBAL function its body only sees locals already in scope at the point
+---it's defined -- `refresh_indicator` didn't exist yet there (it's assigned
+---further down), so without this forward declaration the call resolved to
+---a nonexistent _G.refresh_indicator instead of this local, erroring
+---"attempt to call global 'refresh_indicator' (a nil value)" on every click.
+local refresh_indicator
+
 ---Click handler for a winbar tab box (registered globally below, invoked via
 ---`%{minwid}@v:lua.FloatingTermTabClick@...%X` -- Neovim's 'statusline'/
 ---'winbar' click syntax only accepts a callable *name*, not a closure, so
@@ -215,7 +223,7 @@ end
 
 ---Recompute and apply the winbar on the float's window, if it's currently
 ---open. Safe to call after any tmux() action even when the float is hidden.
-local function refresh_indicator()
+function refresh_indicator()
   if current_win and vim.api.nvim_win_is_valid(current_win) then
     vim.wo[current_win].winbar = tab_indicator()
   end

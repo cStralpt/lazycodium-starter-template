@@ -26,12 +26,19 @@ return {
           local items = {}
           for i = 1, total do
             local active = i == current
-            local bg, fg = rainbow.chip_colors(i, active)
+            -- `link`, NOT `bg`/`fg`: bufferline bakes bg/fg into a highlight
+            -- group it names purely by array position and marks permanently
+            -- `default = true` -- meaning whichever color a given index
+            -- FIRST rendered with (active or not) freezes forever, no
+            -- matter what we pass on later redraws (confirmed live: a tab
+            -- stayed shown as active no matter how many other tabs got
+            -- switched to). `link` skips that path entirely and points
+            -- straight at one of OUR OWN groups (util/rainbow_tabs.lua),
+            -- which we keep fresh every redraw ourselves.
+            local hl = rainbow.chip_hls(i, active)
             items[#items + 1] = {
               text = ("%%%d@v:lua.RainbowTabpageClick@ %d %%X"):format(i, i),
-              bg = bg,
-              fg = fg,
-              bold = active,
+              link = hl.content,
             }
           end
           return items

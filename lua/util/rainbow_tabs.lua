@@ -97,7 +97,22 @@ function M.chip_colors(index, active)
   return M.blend("#ffffff", base, 0.12), M.blend("#ffffff", base, 0.55)
 end
 
-local function chip_hls(index, active)
+---Exported (not local) so plugins/bufferline.lua can use these group NAMES
+---directly via `item.link` instead of handing bufferline raw bg/fg colors.
+---That distinction matters: bufferline.nvim's own custom_area.lua forces
+---`default = true` on any highlight IT creates from bg/fg ("we need to be
+---able to constantly override these" -- but nvim_set_hl's `default` flag
+---means the OPPOSITE: only apply if undefined, i.e. "first write wins,
+---ignore everything after" for that exact group name). Since bufferline
+---names that group purely by array position ("...CustomAreaText7"), the
+---FIRST color a given tabpage-index ever rendered with (active or not)
+---freezes permanently -- confirmed live: a tab stayed highlighted as
+---"active" no matter how many other tabs were switched to afterward.
+---Routing through `item.link` to one of OUR OWN groups instead (managed via
+---a plain, non-default nvim_set_hl call below) sidesteps bufferline's
+---static-bake path entirely, so colors keep updating every redraw like a
+---normal highlight group should.
+function M.chip_hls(index, active)
   local key = index .. (active and "A" or "I")
   local cached = hl_cache[key]
   if cached then
@@ -122,7 +137,7 @@ end
 ---@param click_fn string fully-qualified click callback, e.g. "v:lua.FloatingTermTabClick"
 ---@return string
 function M.pill(index, active, label, click_fn)
-  local hl = chip_hls(index, active)
+  local hl = M.chip_hls(index, active)
   return ("%%%d@%s@%%#%s#%s%%#%s# %s %%#%s#%s%%X"):format(
     index,
     click_fn,
