@@ -88,6 +88,93 @@ map("n", "<leader>tx", floating_term.close_pane, { desc = "Terminal: close pane"
 map("n", "<leader>t]", floating_term.next_tab, { desc = "Terminal: next tab" })
 map("n", "<leader>t[", floating_term.prev_tab, { desc = "Terminal: prev tab" })
 
+-- The Claude workspace: N Claudes as tmux panes, in groups (util/claude_agents
+-- .lua). Mapped EAGERLY here, not as lazy `keys` on coder/claudecode.nvim,
+-- which is where they used to live.
+--
+-- That mattered for latency, not tidiness. None of these touch that plugin --
+-- they drive tmux through util/claude_agents.lua -- but as entries in its
+-- `keys` table they were lazy TRIGGERS for it, so pressing <leader>a ran
+-- lazy.nvim's stub, loaded the plugin, registered 31 mappings and replayed the
+-- pending keys before anything happened. Worse, the spec's
+-- `{ "<leader>a", "", desc = "+ai" }` group entry mapped <leader>a to an empty
+-- string, making it a COMPLETE mapping as well as a prefix -- so every press
+-- also sat out the full 'timeoutlen' (300ms here) waiting to see whether a
+-- longer mapping was coming. That is the "everything under <leader>a is slow"
+-- report: the cost was in the prefix, identical whichever key followed it.
+--
+-- There is deliberately no <leader>a group mapping now. which-key still shows
+-- the group (registered below on VeryLazy, when it exists), but <leader>a is a
+-- pure prefix again, so there is nothing to disambiguate and no wait.
+local agents = require("util.claude_agents")
+local marks = require("util.send_marks")
+
+map("n", "<leader>ac", agents.toggle, { desc = "Claude: toggle workspace" })
+map("n", "<leader>an", agents.new_group, { desc = "Claude: new group (claude tab)" })
+map("n", "<leader>ao", agents.split_below, { desc = "Claude: another agent below" })
+map("n", "<leader>aV", agents.split_right, { desc = "Claude: another agent right" })
+map("n", "<leader>a]", agents.next_group, { desc = "Claude: next group" })
+map("n", "<leader>a[", agents.prev_group, { desc = "Claude: prev group" })
+map("n", "<leader>ax", agents.close_agent, { desc = "Claude: close this agent" })
+map("n", "<leader>az", agents.zoom, { desc = "Claude: show only this agent" })
+map("n", "<leader>af", agents.pick, { desc = "Claude: pick an agent" })
+map("n", "<leader>am", function()
+  agents.move_to_group(vim.v.count)
+end, { desc = "Claude: move agent to a group" })
+
+-- Sends. Each takes an optional count -- `2<leader>as` delivers to agent 2
+-- without moving focus -- and the number is printed on the statusline pill, so
+-- it is read rather than memorised.
+map("n", "<leader>al", function()
+  local file = vim.fn.fnamemodify(vim.fn.expand("%:p"), ":.")
+  agents.send(("@%s:%d "):format(file, vim.fn.line(".")), vim.v.count)
+end, { desc = "Claude: mention current line" })
+
+map("n", "<leader>aM", function()
+  local buf = vim.api.nvim_get_current_buf()
+  local count = vim.v.count
+  local lines = marks.lines(buf)
+  if #lines == 0 then
+    vim.notify("No marked lines in this buffer (<leader>mm to mark)", vim.log.levels.WARN)
+    return
+  end
+  agents.send(marks.blocks(buf, lines), count, function()
+    marks.clear(buf)
+  end)
+end, { desc = "Claude: send all marked lines" })
+
+map("v", "<leader>as", function()
+  local count = vim.v.count
+  vim.cmd("normal! \27") -- leave visual mode so '< '> marks are set
+  local s, e = vim.fn.line("'<"), vim.fn.line("'>")
+  local file = vim.fn.fnamemodify(vim.fn.expand("%:p"), ":.")
+  local lines = vim.api.nvim_buf_get_lines(0, s - 1, e, false)
+  agents.send(("%s:%d-%d\n```\n%s\n```\n"):format(file, s, e, table.concat(lines, "\n")), count)
+end, { desc = "Claude: send selection" })
+
+map("n", "<leader>mm", marks.toggle, { desc = "Toggle send-mark on this line" })
+map("v", "<leader>mm", marks.toggle_visual, { desc = "Toggle send-mark on selected lines" })
+map("n", "<leader>mc", function()
+  marks.clear(vim.api.nvim_get_current_buf())
+  vim.notify("Cleared all send marks in this buffer")
+end, { desc = "Clear all send marks" })
+
+-- Group labels only -- which-key's own registry, NOT real mappings, so the
+-- prefixes stay prefixes and keep costing nothing to type through.
+vim.api.nvim_create_autocmd("User", {
+  pattern = "VeryLazy",
+  callback = function()
+    local ok, wk = pcall(require, "which-key")
+    if ok then
+      wk.add({
+        { "<leader>a", group = "ai" },
+        { "<leader>aI", group = "ai-review (mcp)" },
+        { "<leader>m", group = "send-marks" },
+      })
+    end
+  end,
+})
+
 local function neovimMappings()
   -- map(
   --   { "i", "t" },

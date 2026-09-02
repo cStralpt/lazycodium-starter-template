@@ -86,6 +86,22 @@ function M.new(config)
   ---tmux session it used to name is still alive and full of your work. See
   ---adopt_workspace() for how that hand-off is made non-destructive.
   local function canonical_session()
+    -- A shared_local workspace has ONE name, forever, collaborating or not.
+    --
+    -- Renaming it per root session was actively harmful. The collaboration
+    -- rename exists so a per-instance workspace can be handed to the session
+    -- you just joined -- but a shared workspace is already machine-wide, so the
+    -- root port adds nothing, and always_group makes its canonical session
+    -- permanently GROUPED (every Neovim attaches via "<name>-w<pid>").
+    -- adopt_workspace refuses to rename a grouped session, correctly, since
+    -- that would yank the workspace out from under other windows -- so the
+    -- hand-off could never succeed. <leader>iss therefore abandoned the live
+    -- workspace and built a second one beside it: two sets of agents, both
+    -- running, ~1.4GB of duplicated Claude processes, with only the new set
+    -- reachable from the pickers.
+    if config.shared_local then
+      return local_session()
+    end
     if vim.g.instant_root_port then
       return ("%s-root%s"):format(config.root_prefix, tostring(vim.g.instant_root_port))
     end
@@ -954,16 +970,46 @@ function M.new(config)
     if not session_alive(canonical) then
       return
     end
+    local mine = my_session()
     local out = vim.fn.systemlist({ "tmux", "list-sessions", "-F", "#{session_name}" })
     if vim.v.shell_error ~= 0 then
       return
     end
+    -- PRIMARY signal: does any session sharing this workspace still have a
+    -- client attached? tmux tracks that itself, so it survives renames, does
+    -- not depend on our naming convention, and needs no stale-entry reaping --
+    -- a Neovim that is SIGKILLed takes its tmux client with it, so the count
+    -- drops on its own. Name-pattern refcounting broke exactly once already,
+    -- when the workspace was renamed and the surviving view sessions no longer
+    -- matched the pattern, which would have killed a workspace another window
+    -- was still using.
+    local group = vim.trim(vim.fn.system({ "tmux", "display-message", "-p", "-t", canonical, "#{session_group}" }))
+    if group ~= "" then
+      local rows = vim.fn.systemlist({
+        "tmux",
+        "list-sessions",
+        "-F",
+        "#{session_name}\t#{session_group}\t#{session_attached}",
+      })
+      if vim.v.shell_error == 0 then
+        for _, row in ipairs(rows) do
+          local name, g, attached = row:match("^([^\t]+)\t([^\t]*)\t(%d+)$")
+          if name and g == group and attached ~= "0" and name ~= mine then
+            return -- someone else still has this workspace open
+          end
+        end
+      end
+    end
+
+    -- SECONDARY: a Neovim that never opened the float has no client attached,
+    -- but is still using the workspace (it can send to agents). Those are found
+    -- by their view session, and only these need the dead-pid reaping.
+    --
     -- Scan every sibling BEFORE deciding, rather than returning on the first
     -- live one. Returning early left stale sessions behind whenever a live
     -- sibling happened to sort ahead of them (tmux lists alphabetically, so
     -- "-w291615" precedes "-w999999") -- harmless, since it self-heals on the
     -- next exit, but it made the leftover count depend on pid ordering.
-    local mine = my_session()
     local others_alive = false
     for _, name in ipairs(out) do
       local pid = name:match("^" .. vim.pesc(canonical) .. "%-w(%d+)$")

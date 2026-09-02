@@ -102,6 +102,48 @@ function M.current()
   return agents[1]
 end
 
+---Last ~300 rendered lines of a pane, as a list.
+local function pane_text(pane)
+  local out = vim.fn.systemlist({ "tmux", "capture-pane", "-p", "-S", "-300", "-t", pane })
+  if vim.v.shell_error ~= 0 then
+    return {}
+  end
+  return out
+end
+
+---A one-line summary of what an agent is holding, for a picker row.
+---
+---This is CONTENT, not status: it is text tmux actually rendered, quoted
+---verbatim. That distinction is why it's here at all -- inferring "working" or
+---"waiting" from the same screen was guesswork and got removed, but "the last
+---thing in this pane says X" is a fact, and it is the only thing that tells
+---four agents in one repo apart.
+---
+---Prefers the prompt line (Claude draws it with a leading chevron), since
+---that's what you typed and what you'd recognise; falls back to the last
+---non-empty line for a pane that has scrolled past its prompt.
+-- Every chevron Claude's prompt has been seen drawn with, plus plain ">" for a
+-- shell. An explicit list rather than "any leading punctuation": that would
+-- also match bullets, box-drawing and list markers, which fill the output.
+--
+-- Compared as STRING PREFIXES, never as a Lua character class. Lua patterns are
+-- byte-based, so "[\u{276f}\u{203a}]" is a set of the individual BYTES of
+-- those glyphs, and "^[...]%s" then requires whitespace at byte 2 -- inside a
+-- 3-byte chevron. It could never match a real prompt line, which is why rows
+-- silently fell through to whatever text sat below the prompt.
+local PROMPT_PREFIXES = { "\u{276f}", "\u{203a}", "\u{27e9}", "\u{276d}", "\u{25b6}", ">" }
+
+---The text after a leading prompt glyph, "" for a bare prompt, nil if this
+---isn't a prompt line at all.
+local function after_prompt(line)
+  for _, glyph in ipairs(PROMPT_PREFIXES) do
+    if line:sub(1, #glyph) == glyph then
+      return vim.trim(line:sub(#glyph + 1))
+    end
+  end
+  return nil
+end
+
 ---Resolve a send/focus target. An explicit count (`2<leader>as`) wins;
 ---otherwise it's the active pane. Returning the count separately is what lets
 ---a count-send reach another agent WITHOUT moving tmux's focus.
@@ -147,72 +189,99 @@ end
 ---@param count integer? explicit slot (vim.v.count); nil/0 = focused agent
 ---@param on_sent function? called only once the text was actually delivered, so
 ---callers can clear state (e.g. send marks) that must survive a failed send
+---Wait until a freshly spawned agent is actually ready for input, then run
+---`cb`. A brand-new Claude takes several seconds to draw its prompt, and text
+---typed before then is swallowed by the TUI's first redraw -- so an
+---auto-spawned agent would silently eat exactly the selection you sent it.
+---
+---Polls asynchronously (never blocks Neovim) and gives up after ~10s, sending
+---anyway rather than dropping your text.
+local function when_ready(agent, cb, attempts)
+  attempts = attempts or 40
+  for _, line in ipairs(pane_text(agent.pane)) do
+    local prompt = after_prompt(vim.trim(line))
+    -- A numbered option is a MENU, not an input prompt. A fresh Claude in an
+    -- untrusted folder draws "> 1. Yes, I trust this folder" -- which reads as a
+    -- prompt by shape, so without this the selection you sent would be typed
+    -- into that dialog instead of the conversation.
+    if prompt and not prompt:match("^%d+%.%s") then
+      return cb()
+    end
+  end
+  if attempts <= 0 then
+    return cb()
+  end
+  vim.defer_fn(function()
+    when_ready(agent, cb, attempts - 1)
+  end, 250)
+end
+
+---Type text into an agent exactly as if you'd typed it yourself -- no MCP
+---involved. `send-keys -l` sends it literally, leaving it in Claude's prompt for
+---you to review and submit, rather than firing it off.
+---
+---With no count this also TAKES YOU THERE: it focuses the target pane and opens
+---the workspace, so sending a selection lands you in front of the agent that
+---received it. A counted send (`2<leader>as`) deliberately does neither -- its
+---whole purpose is nudging another agent while you stay where you are.
+---
+---With no agents at all it spins one up first, waits for it to be ready, and
+---then sends -- so <leader>as works from a cold start without <leader>ac.
+---@param text string
+---@param count integer? explicit slot (vim.v.count); nil/0 = focused agent
+---@param on_sent function? called only once the text was actually delivered, so
+---callers can clear state (e.g. send marks) that must survive a failed send
 function M.send(text, count, on_sent)
+  local counted = count ~= nil and count > 0
+
+  local function deliver(agent)
+    vim.fn.system({ "tmux", "send-keys", "-t", agent.pane, "-l", text })
+    if vim.v.shell_error ~= 0 then
+      vim.notify(("Agent %d (%s) is gone"):format(agent.slot, agent.pane), vim.log.levels.WARN)
+      return
+    end
+    if not counted then
+      M.focus(agent)
+      pcall(ws.show)
+    end
+    -- Always confirm WHERE it landed. With one agent this is noise you learn to
+    -- ignore; with several -- especially a counted send into a group you aren't
+    -- looking at -- it's the difference between catching a mis-send now and
+    -- catching it five minutes later.
+    vim.notify(("-> %d %s"):format(agent.slot, agent.name))
+    if on_sent then
+      on_sent()
+    end
+  end
+
   local agent = resolve(count)
+  if agent then
+    deliver(agent)
+    return
+  end
+
+  -- A counted send names a slot that must already exist; spawning a fresh agent
+  -- could never be slot N, so don't pretend otherwise.
+  if counted then
+    return
+  end
+
+  ws.ensure_session()
+  agent = resolve(0)
   if not agent then
-    vim.notify("No Claude agent yet (<leader>ac to start one)", vim.log.levels.WARN)
+    vim.notify("Could not start a Claude agent", vim.log.levels.WARN)
     return
   end
-  vim.fn.system({ "tmux", "send-keys", "-t", agent.pane, "-l", text })
-  if vim.v.shell_error ~= 0 then
-    vim.notify(("Agent %d (%s) is gone"):format(agent.slot, agent.pane), vim.log.levels.WARN)
-    return
-  end
-  -- Always confirm WHERE it landed. With one agent this is noise you learn to
-  -- ignore; with several -- especially when the target is in a group you
-  -- aren't looking at -- it's the difference between catching a mis-send now
-  -- and catching it five minutes later.
-  vim.notify(("-> %d %s"):format(agent.slot, agent.name))
-  if on_sent then
-    on_sent()
-  end
+  pcall(ws.show)
+  vim.notify(("Started %s -- sending once it's ready"):format(agent.name))
+  when_ready(agent, function()
+    deliver(agent)
+  end)
 end
 
 --=============================================================================
 -- Actions (thin wrappers over the workspace)
 --=============================================================================
-
----Last ~300 rendered lines of a pane, as a list.
-local function pane_text(pane)
-  local out = vim.fn.systemlist({ "tmux", "capture-pane", "-p", "-S", "-300", "-t", pane })
-  if vim.v.shell_error ~= 0 then
-    return {}
-  end
-  return out
-end
-
----A one-line summary of what an agent is holding, for a picker row.
----
----This is CONTENT, not status: it is text tmux actually rendered, quoted
----verbatim. That distinction is why it's here at all -- inferring "working" or
----"waiting" from the same screen was guesswork and got removed, but "the last
----thing in this pane says X" is a fact, and it is the only thing that tells
----four agents in one repo apart.
----
----Prefers the prompt line (Claude draws it with a leading chevron), since
----that's what you typed and what you'd recognise; falls back to the last
----non-empty line for a pane that has scrolled past its prompt.
--- Every chevron Claude's prompt has been seen drawn with, plus plain ">" for a
--- shell. An explicit list rather than "any leading punctuation": that would
--- also match bullets, box-drawing and list markers, which fill the output.
---
--- Compared as STRING PREFIXES, never as a Lua character class. Lua patterns are
--- byte-based, so "[\u{276f}\u{203a}]" is a set of the individual BYTES of
--- those glyphs, and "^[...]%s" then requires whitespace at byte 2 -- inside a
--- 3-byte chevron. It could never match a real prompt line, which is why rows
--- silently fell through to whatever text sat below the prompt.
-local PROMPT_PREFIXES = { "\u{276f}", "\u{203a}", "\u{27e9}", "\u{276d}", "\u{25b6}", ">" }
-
----The text after a leading prompt glyph, "" for a bare prompt, nil if this
----isn't a prompt line at all.
-local function after_prompt(line)
-  for _, glyph in ipairs(PROMPT_PREFIXES) do
-    if line:sub(1, #glyph) == glyph then
-      return vim.trim(line:sub(#glyph + 1))
-    end
-  end
-  return nil
-end
 
 -- Chrome Claude draws in every pane. Matched by PATTERN, not exact string --
 -- these carry version numbers, changing model names and shortcut hints, so
