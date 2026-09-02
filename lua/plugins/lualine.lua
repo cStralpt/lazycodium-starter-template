@@ -6,6 +6,7 @@
 -- the intensity of the mode block at the far left rather than inventing a
 -- second palette.
 local rainbow = require("util.rainbow_tabs")
+local agents = require("util.claude_agents")
 
 -- Named groups rather than inline colors because that's the only interface
 -- LazyVim.lualine.pretty_path() offers: it takes highlight group NAMES
@@ -56,6 +57,11 @@ return {
   "nvim-lualine/lualine.nvim",
   opts = function(_, opts)
     define_hls()
+    -- Start the registry here, not only from claude-code.lua's config: that
+    -- plugin is lazy-loaded on <leader>a, so the agent board would stay blank
+    -- until the first agent keypress -- including for a Claude already running
+    -- in the <C-/> workspace. setup() is idempotent, so both callers are fine.
+    agents.setup()
     vim.api.nvim_create_autocmd("ColorScheme", {
       callback = function()
         vim.schedule(define_hls)
@@ -108,6 +114,25 @@ return {
         }),
       },
     }
+
+    -- The right-hand sections, rebuilt around agents.
+    --
+    -- What was here (LazyVim's defaults) was a profiler status, noice's
+    -- pending-keys readout, a lazy.nvim update count, `progress` and
+    -- `location` -- five things that are either transient, actionable once a
+    -- week, or already visible elsewhere (the cursor position is, literally,
+    -- where the cursor is). None of them answer the question you actually
+    -- have while agents are running, which is "is anything waiting on me?"
+    --
+    -- So lualine_x becomes the agent board and nothing else. It renders "" when
+    -- no agent exists, so a plain editing session gets a clean, empty right
+    -- side rather than a swap of one set of noise for another.
+    opts.sections.lualine_x = {
+      { agents.lualine, padding = { left = 1, right = 1 } },
+    }
+    -- progress + location dropped. To bring the cursor position back, restore:
+    --   opts.sections.lualine_y = { { "progress", separator = " " }, { "location" } }
+    opts.sections.lualine_y = {}
 
     -- Re-add trouble's symbol breadcrumb with our own group. LazyVim hardcodes
     -- `{symbol.name:Normal}` and `hl_group = "lualine_c_normal"`, which is
