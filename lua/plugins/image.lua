@@ -27,6 +27,6 @@ return {
     -- disruptive error popup -- local images still render fine either way.
     ignore_download_error = true,
     -- Opening an image file directly renders it instead of showing raw bytes.
-    hijack_file_patterns = { "*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp", "*.avif" },
+    hijack_file_patterns = { "*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp", "*.avif", "*.svg" },
   },
 }
