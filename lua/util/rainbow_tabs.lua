@@ -4,21 +4,28 @@
 -- two look like one consistent style rather than two different hacks.
 local M = {}
 
--- Punchy, saturated neon accents -- deliberately more vivid than
--- tokyonight-moon's own (fairly muted/pastel) palette, and with the warm
--- orange/tan range skipped entirely per explicit request. Hardcoded rather
--- than read from `require("tokyonight.colors")` so this keeps working even
--- if tokyonight isn't the active/loaded colorscheme.
+-- Accents at tokyonight-moon's own pastel intensity -- specifically the level
+-- lualine paints its mode section with, since that's the loudest color
+-- already on screen and these chips shouldn't outshout it. Five of the nine
+-- ARE lualine's mode colors verbatim (blue = normal, green = insert,
+-- magenta = visual, red = replace, yellow = command); the rest come from the
+-- same palette to fill out the cycle. Supersedes an earlier deliberately-neon
+-- set (#ff2f92, #00e5ff, ...) that read as louder than everything around it.
+--
+-- Still hardcoded rather than read from `require("tokyonight.colors")` so this
+-- keeps working even if tokyonight isn't the active/loaded colorscheme, and
+-- the warm orange/tan range (moon's `orange`, #ff966c) is still skipped
+-- entirely per the original explicit request.
 M.accents = {
-  "#ff2f92", -- hot pink
-  "#00e5ff", -- electric cyan
-  "#39ff6a", -- neon green
-  "#7c4dff", -- violet
-  "#2979ff", -- electric blue
-  "#ffea00", -- electric yellow
-  "#ff3860", -- crimson
-  "#b967ff", -- purple
-  "#00ffc6", -- neon mint
+  "#fca7ea", -- pink        (moon `purple`)
+  "#86e1fc", -- cyan
+  "#c3e88d", -- green       (lualine insert)
+  "#c099ff", -- magenta     (lualine visual)
+  "#82aaff", -- blue        (lualine normal)
+  "#ffc777", -- yellow      (lualine command)
+  "#ff757f", -- red         (lualine replace)
+  "#65bcff", -- azure       (moon `blue1`)
+  "#4fd6be", -- teal
 }
 
 local function hex_to_rgb(hex)
@@ -54,6 +61,15 @@ function M.color(index)
   return M.accents[((index - 1) % #M.accents) + 1]
 end
 
+---The accent for the tabpage you're currently on. Used by the bufferline
+---restyle (plugins/bufferline.lua) so the selected *buffer* tab is painted in
+---the same hue as the currently-lit tabpage chip on the right -- the whole
+---line then reads as one color per workspace, instead of two unrelated
+---rainbow systems fighting for attention in the same 1-row strip.
+function M.current_accent()
+  return M.color(vim.fn.tabpagenr())
+end
+
 -- Rounded end-caps, NOT lualine's slanted `section_separators` glyphs
 -- (U+E0B0/U+E0B2): those only read cleanly when segments are chained
 -- together with matching adjacent colors (as in lualine's own statusline).
@@ -84,17 +100,25 @@ vim.api.nvim_create_autocmd("ColorScheme", {
 ---@return string fill, string text
 function M.chip_colors(index, active)
   local base = M.base_bg()
+  local accent = M.color(index)
   if active then
-    -- Only the active chip carries its rainbow color -- this is the ONE
-    -- signal for "which tab am I on", so it has to be unambiguous rather
-    -- than "brighter than its neighbors" (which reads as noise once every
-    -- chip is a different hue at a different brightness).
-    return M.color(index), base
+    -- SOLID: the accent as a full fill, with the text knocked out in the
+    -- background color and bolded (see chip_hls). Filled-vs-outlined is a
+    -- shape difference, readable at a glance even between two chips whose
+    -- hues are neighbors -- which matters because every chip is now colored.
+    return accent, base
   end
-  -- Flat neutral gray, same for every inactive chip regardless of index --
-  -- deliberately NOT a dimmed version of that chip's own hue, so "colored"
-  -- vs. "gray" is the whole story instead of "compare shades".
-  return M.blend("#ffffff", base, 0.12), M.blend("#ffffff", base, 0.55)
+  -- OUTLINED: the chip's own hue, but as text on a dark tint of itself
+  -- rather than a fill. Every chip stays colorful and identifiable by hue,
+  -- while only one is ever solid.
+  --
+  -- This deliberately REVERSES the module's original rule ("only the active
+  -- chip is colored, all others flat gray, so colored-vs-gray is the whole
+  -- story"). That version made the color carry the active signal, which meant
+  -- a chip's hue told you nothing stable about WHICH tab it was. Now hue is a
+  -- fixed per-tab identity and fill weight carries "you are here" -- two
+  -- independent signals instead of one overloaded one.
+  return M.blend(accent, base, 0.20), accent
 end
 
 ---Exported (not local) so plugins/bufferline.lua can use these group NAMES
