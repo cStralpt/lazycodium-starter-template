@@ -86,6 +86,20 @@ local function ensure_session()
     -- own sessions (those always pass an explicit cmd).
     vim.fn.system({ "tmux", "set-option", "-g", "default-shell", fish })
     vim.fn.system({ "tmux", "set-option", "-g", "default-command", fish })
+    -- Without an explicit "default" background, tmux paints every unstyled
+    -- cell (window, status bar, pane borders) a hardcoded black rather than
+    -- leaving it untouched -- so instead of showing through Neovim's own
+    -- terminal background (which tracks the colorscheme, since nothing in
+    -- this config overrides g:terminal_color_*), you get a flat black box
+    -- wherever tmux itself painted anything. `bg=default` tells tmux to
+    -- emit plain SGR 49 ("default background", no explicit color) instead
+    -- -- these apply live at render time, not at pane-creation time, so
+    -- ordering relative to `new-session` above doesn't matter.
+    vim.fn.system({ "tmux", "set-option", "-g", "window-style", "bg=default" })
+    vim.fn.system({ "tmux", "set-option", "-g", "window-active-style", "bg=default" })
+    vim.fn.system({ "tmux", "set-option", "-g", "status-style", "bg=default" })
+    vim.fn.system({ "tmux", "set-option", "-g", "pane-border-style", "bg=default" })
+    vim.fn.system({ "tmux", "set-option", "-g", "pane-active-border-style", "bg=default" })
     if not vim.g.instant_root_port then
       owned_sessions[canonical] = true
     end
@@ -117,6 +131,96 @@ local function tmux(args)
   vim.fn.system(full)
 end
 
+---Force a genuine pty resize round-trip, so the underlying `tmux attach`
+---process gets a REAL SIGWINCH and does its own full reflow+redraw -- the
+---same thing that already happens correctly whenever you resize your actual
+---terminal window (which is why THAT case never shows this bug). Needed
+---because reopening a hidden float at identical rows/cols never generates
+---an actual size change, so nothing ever prompts tmux to repaint; its last
+---frame from before hide() just sits stale in whatever cells the fresh
+---content didn't happen to overwrite. This almost certainly predates the
+---indicator entirely -- it was just invisible before, since both the stale
+---leftover content and the freshly (correctly) drawn content were rendered
+---on the same solid black tmux background; switching tmux to `bg=default`
+---(to follow the colorscheme, per an earlier request) didn't cause this, it
+---just stopped hiding it -- the stale cells kept their old black fill while
+---everything genuinely redrawn now shows through in theme color instead.
+---@param win integer @param buf integer
+local function nudge_resize(win, buf)
+  local job = vim.b[buf] and vim.b[buf].terminal_job_id
+  if not job then
+    return
+  end
+  local ok_w, width = pcall(vim.api.nvim_win_get_width, win)
+  local ok_h, height = pcall(vim.api.nvim_win_get_height, win)
+  if not (ok_w and ok_h) then
+    return
+  end
+  -- Resize down then immediately back to the real size: two genuinely
+  -- different dimensions, guaranteeing an actual SIGWINCH fires at least
+  -- once, unlike calling jobresize with the unchanged size (a likely no-op).
+  vim.fn.jobresize(job, math.max(width - 1, 1), height)
+  vim.fn.jobresize(job, width, height)
+end
+
+---Window currently showing the float, so tab-count changes (new/next/prev/
+---close) can refresh its indicator even though each M.toggle() call gets a
+---fresh `terminal` object from Snacks rather than a value we already hold.
+local current_win = nil
+
+---Click handler for a winbar tab box (registered globally below, invoked via
+---`%{minwid}@v:lua.FloatingTermTabClick@...%X` -- Neovim's 'statusline'/
+---'winbar' click syntax only accepts a callable *name*, not a closure, so
+---this can't be local to tab_indicator() and has to read `my_session()`
+---itself rather than capturing `target`).
+---@param minwid integer the tmux window index, passed through as the click item's minwid
+function _G.FloatingTermTabClick(minwid)
+  local target = my_session()
+  if session_alive(target) then
+    vim.fn.system({ "tmux", "select-window", "-t", target .. ":" .. minwid })
+  end
+  refresh_indicator()
+end
+
+local rainbow = require("util.rainbow_tabs")
+
+---Rounded-pill winbar for the float's tmux windows ("tabs"), mirroring the
+---rainbow bufferline tabpage indicator in the corner of the editor tabline:
+---one uniquely-colored pill per tmux window, and -- like clicking an editor
+---tab to switch to it -- clickable to jump straight to that tmux window
+---instead of only via [ / ].
+local function tab_indicator()
+  local target = my_session()
+  if not session_alive(target) then
+    return ""
+  end
+  local out = vim.fn.system({
+    "tmux",
+    "list-windows",
+    "-t",
+    target,
+    "-F",
+    "#{window_index}:#{window_active}",
+  })
+  if vim.v.shell_error ~= 0 then
+    return ""
+  end
+  local parts = {}
+  for index, active in out:gmatch("(%d+):(%d)") do
+    local idx = tonumber(index)
+    table.insert(parts, rainbow.pill(idx, active == "1", index, "v:lua.FloatingTermTabClick"))
+  end
+  return table.concat(parts) .. "%#TabLineFill#"
+end
+
+---Recompute and apply the winbar on the float's window, if it's currently
+---open. Safe to call after any tmux() action even when the float is hidden.
+local function refresh_indicator()
+  if current_win and vim.api.nvim_win_is_valid(current_win) then
+    vim.wo[current_win].winbar = tab_indicator()
+  end
+end
+
 local pane_bound = {}
 
 ---Move between TMUX PANES with the same <C-hjkl> you use for Neovim windows
@@ -139,6 +243,20 @@ local function bind_pane_nav(buf, target)
       vim.fn.system({ "tmux", "select-pane", "-t", target, flag })
     end, { buffer = buf, desc = "Tmux pane: move " .. key })
   end
+  -- Self-heal the winbar on every re-entry into this buffer's window,
+  -- rather than trusting the single set right after M.toggle() returns.
+  -- Snacks.win re-applies its OWN `opts.wo` (which defaults winbar = "" for
+  -- float terminals -- we never override it) on some show()/update() paths,
+  -- which can silently clobber whatever we set a moment earlier depending on
+  -- exact timing -- this was the "pills vanish after the 2nd <C-/>" bug.
+  -- Scheduled so it runs after any of Snacks' own same-tick option resets.
+  vim.api.nvim_create_autocmd("WinEnter", {
+    buffer = buf,
+    callback = function()
+      current_win = vim.api.nvim_get_current_win()
+      vim.schedule(refresh_indicator)
+    end,
+  })
   vim.api.nvim_create_autocmd("BufWipeout", {
     buffer = buf,
     once = true,
@@ -162,7 +280,7 @@ function M.toggle()
   -- patch untouched, so this sidesteps it entirely -- we already handle our
   -- own collab sharing above via tmux session groups.
   local cmd = { "tmux", "attach", "-t", target }
-  local terminal = Snacks.terminal.focus(cmd, {
+  local opts = {
     win = {
       position = "float",
       width = 0.97,
@@ -173,10 +291,27 @@ function M.toggle()
       -- applies to its own floating layout).
       wo = { winblend = 0 },
     },
-  })
+  }
+  -- This one call does 100% of the actual window management (show / hide /
+  -- resize / focus). Its return value is ignored: snacks.win's `:focus()`
+  -- has no `return` statement, so on every REOPEN of an already-existing
+  -- terminal `Snacks.terminal.focus()`'s own `assert(terminal):show():focus()`
+  -- evaluates to nil even though the window opened fine -- so trusting the
+  -- return value here (a version of this file once did) silently skipped
+  -- the winbar update on every reopen. Instead: let Snacks fully own
+  -- toggling, and separately (net-new, side-effect-free) read the SAME
+  -- cached terminal object straight out of its own cache afterward, purely
+  -- to drive the winbar and the reopen-redraw nudge below.
+  Snacks.terminal.focus(cmd, opts)
+  local terminal = Snacks.terminal.get(cmd, { create = false })
   if terminal and terminal.buf then
     bind_pane_nav(terminal.buf, target)
   end
+  if terminal and terminal.win and vim.api.nvim_win_is_valid(terminal.win) then
+    current_win = terminal.win
+    nudge_resize(terminal.win, terminal.buf)
+  end
+  refresh_indicator()
 end
 
 ---New pane, stacked top/bottom (mirrors Neovim's :split).
@@ -192,14 +327,17 @@ end
 ---New tab (tmux window) -- a fresh terminal group, back at the project root.
 function M.new_tab()
   tmux({ "new-window", "-c", LazyVim.root() })
+  refresh_indicator()
 end
 
 function M.next_tab()
   tmux({ "next-window" })
+  refresh_indicator()
 end
 
 function M.prev_tab()
   tmux({ "previous-window" })
+  refresh_indicator()
 end
 
 ---Close the current pane. Closing the last pane in the last tab ends the
@@ -208,6 +346,7 @@ end
 ---terminal.
 function M.close_pane()
   tmux({ "kill-pane" })
+  refresh_indicator()
 end
 
 -- Don't leave orphaned tmux sessions behind once this Neovim instance
