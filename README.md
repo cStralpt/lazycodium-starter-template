@@ -192,7 +192,9 @@ A separate Claude per tab (`<leader>ac`), plus one shared MCP review session for
 | `<leader>at` | Open/toggle a plain terminal for this tab (toggles the same session as `<leader>ac`) |
 | `<leader>aw` | Toggle Claude between a split and a floating window |
 | `<leader>al` | Send the current line to Claude |
-| `<leader>aM` | Send all marked lines (`ma`, `mb`, ...) to Claude |
+| `<leader>mm` | Toggle a send-mark on the current line (visual: toggle every line in the selection) |
+| `<leader>mc` | Clear all send-marks in this buffer |
+| `<leader>aM` | Send all marked lines to Claude, grouped into contiguous `file:start-end` blocks like `<leader>as`; marks clear only once the send succeeds |
 | `<leader>as` | (visual) Send the selected code to Claude |
 | `<C-h/j/k/l>` | Move between the Claude window and your code |
 | `<Esc>` | Interrupt Claude |
@@ -200,7 +202,7 @@ A separate Claude per tab (`<leader>ac`), plus one shared MCP review session for
 | `<C-/>` | Open an embedded terminal |
 | `<leader>aIc` | Toggle the MCP review session |
 | `<leader>aIf/aIr/aIC/aIm` | Focus / resume / continue the review session / pick a model |
-| `<leader>aIb/aIl/aIM` | Add buffer / current line / marked lines as context |
+| `<leader>aIb/aIl/aIM` | Add buffer / current line / marked lines (`<leader>mm`) as context |
 | `<leader>aIa/aId` | Accept / reject a diff |
 
 ## 🪟 Multi-Window Session Mirroring (dual-monitor)

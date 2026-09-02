@@ -151,16 +151,19 @@ end
 ---randomly doesn't, for no apparent reason" actually was. ~3s of retrying
 ---(10 attempts, 300ms apart) covers that race without hanging indefinitely
 ---on a session that's genuinely never going to exist.
-local function try_send_via_tmux(session, text, attempts_left, on_fail)
+local function try_send_via_tmux(session, text, attempts_left, on_fail, on_success)
   vim.fn.system({ "tmux", "has-session", "-t", session })
   if vim.v.shell_error == 0 then
     vim.fn.system({ "tmux", "send-keys", "-t", session, "-l", text })
     vim.notify("Sent to this tab's terminal (open in another window)", vim.log.levels.INFO)
+    if on_success then
+      on_success()
+    end
     return
   end
   if attempts_left > 0 then
     vim.defer_fn(function()
-      try_send_via_tmux(session, text, attempts_left - 1, on_fail)
+      try_send_via_tmux(session, text, attempts_left - 1, on_fail, on_success)
     end, 300)
   else
     on_fail()
@@ -181,7 +184,10 @@ end
 ---here: only the window that already has it visible shows any effect.
 ---<leader>ac/<leader>at are unaffected and still explicitly toggle/spawn a
 ---window in whichever terminal they're pressed in.
-local function send_to_tab_terminal(text)
+---@param on_sent function? called only once the text has actually been
+---delivered somewhere -- callers use this to clear state (e.g. send marks)
+---that should survive a failed/no-op send.
+local function send_to_tab_terminal(text, on_sent)
   local id = tab_id()
   local state = tab_claude[id]
   local alive = state and state.buf and vim.api.nvim_buf_is_valid(state.buf)
@@ -191,7 +197,7 @@ local function send_to_tab_terminal(text)
     if session then
       try_send_via_tmux(session, text, 10, function()
         vim.notify("No Claude terminal in this tab yet (<leader>ac to start one)", vim.log.levels.WARN)
-      end)
+      end, on_sent)
       return
     end
     vim.notify("No Claude terminal in this tab yet (<leader>ac to start one)", vim.log.levels.WARN)
@@ -205,9 +211,119 @@ local function send_to_tab_terminal(text)
     show_existing(state)
   end
   vim.cmd("startinsert")
+  if on_sent then
+    on_sent()
+  end
 end
 
-return {
+-- Ordered, toggle-based "send marks" -- one key (<leader>mm) toggles the
+-- current line in/out of a per-buffer list, shown live via a sign-column
+-- marker (extmarks track the line even if you edit above it). No letters
+-- to remember, no name collisions; <leader>aM/<leader>aIM send the list in
+-- the order lines were added, then clear it.
+local send_marks_ns = vim.api.nvim_create_namespace("claude_send_marks")
+vim.api.nvim_set_hl(0, "ClaudeSendMark", { link = "DiagnosticSignInfo", default = true })
+
+---send_marks[bufnr] = { extmark_id, ... } in insertion order.
+local send_marks = {}
+
+---Toggles a single 0-indexed line's mark on/off. Returns true if it ended
+---up marked, false if it was unmarked. Shared by the normal- and
+---visual-mode entry points below.
+local function toggle_mark_line(buf, line0)
+  local ids = send_marks[buf] or {}
+  send_marks[buf] = ids
+
+  for idx, id in ipairs(ids) do
+    local pos = vim.api.nvim_buf_get_extmark_by_id(buf, send_marks_ns, id, {})
+    if pos[1] == line0 then
+      vim.api.nvim_buf_del_extmark(buf, send_marks_ns, id)
+      table.remove(ids, idx)
+      return false
+    end
+  end
+
+  local id = vim.api.nvim_buf_set_extmark(buf, send_marks_ns, line0, 0, {
+    sign_text = "»",
+    sign_hl_group = "ClaudeSendMark",
+  })
+  table.insert(ids, id)
+  return true
+end
+
+local function toggle_send_mark()
+  local buf = vim.api.nvim_get_current_buf()
+  local line0 = vim.fn.line(".") - 1
+  local marked = toggle_mark_line(buf, line0)
+  local count = #(send_marks[buf] or {})
+  vim.notify(("%s line %d (%d marked)"):format(marked and "Marked" or "Unmarked", line0 + 1, count))
+end
+
+---Visual-mode counterpart: toggles every line in the selection, so marking
+---a block you just selected doesn't require repeating <leader>mm per line.
+local function toggle_send_mark_visual()
+  vim.cmd("normal! \27") -- leave visual mode so '< '> marks are set
+  local buf = vim.api.nvim_get_current_buf()
+  local s, e = vim.fn.line("'<") - 1, vim.fn.line("'>") - 1
+  for line0 = s, e do
+    toggle_mark_line(buf, line0)
+  end
+  local count = #(send_marks[buf] or {})
+  vim.notify(("Toggled lines %d-%d (%d marked)"):format(s + 1, e + 1, count))
+end
+
+---Returns 1-indexed line numbers in insertion order. Reads extmark
+---positions live, so lines shifted by edits since marking still resolve
+---correctly.
+local function get_send_mark_lines(buf)
+  local ids = send_marks[buf]
+  if not ids or #ids == 0 then
+    return {}
+  end
+  local lines = {}
+  for _, id in ipairs(ids) do
+    local pos = vim.api.nvim_buf_get_extmark_by_id(buf, send_marks_ns, id, {})
+    if pos[1] then
+      table.insert(lines, pos[1] + 1)
+    end
+  end
+  return lines
+end
+
+local function clear_send_marks(buf)
+  vim.api.nvim_buf_clear_namespace(buf, send_marks_ns, 0, -1)
+  send_marks[buf] = {}
+end
+
+---Builds the same "file:start-end" + fenced-code-block format <leader>as
+---sends, one block per contiguous run of marked lines -- so three marks in
+---a row become one 391-393 block with the real code, not three separate
+---single-line mentions.
+local function build_marked_blocks(buf, lines)
+  local file = vim.fn.fnamemodify(vim.fn.expand("%:p"), ":.")
+  local sorted = {}
+  for _, line in ipairs(lines) do
+    table.insert(sorted, line)
+  end
+  table.sort(sorted)
+
+  local parts = {}
+  local i = 1
+  while i <= #sorted do
+    local s = sorted[i]
+    local e = s
+    while sorted[i + 1] == e + 1 do
+      e = sorted[i + 1]
+      i = i + 1
+    end
+    local content = vim.api.nvim_buf_get_lines(buf, s - 1, e, false)
+    table.insert(parts, ("%s:%d-%d\n```\n%s\n```"):format(file, s, e, table.concat(content, "\n")))
+    i = i + 1
+  end
+  return table.concat(parts, "\n") .. "\n"
+end
+
+local M = {
   "coder/claudecode.nvim",
   dependencies = { "folke/snacks.nvim" },
   opts = {
@@ -263,22 +379,17 @@ return {
     {
       "<leader>aM",
       function()
-        local file = vim.fn.fnamemodify(vim.fn.expand("%:p"), ":.")
-        local mentioned = {}
-        for i = string.byte("a"), string.byte("z") do
-          local mark = string.char(i)
-          local pos = vim.api.nvim_buf_get_mark(0, mark)
-          if pos[1] > 0 then
-            table.insert(mentioned, ("@%s:%d"):format(file, pos[1]))
-          end
-        end
-        if #mentioned == 0 then
-          vim.notify("No local marks (a-z) set in this buffer", vim.log.levels.WARN)
+        local buf = vim.api.nvim_get_current_buf()
+        local lines = get_send_mark_lines(buf)
+        if #lines == 0 then
+          vim.notify("No marked lines in this buffer (<leader>mm to mark)", vim.log.levels.WARN)
           return
         end
-        send_to_tab_terminal(table.concat(mentioned, " ") .. " ")
+        send_to_tab_terminal(build_marked_blocks(buf, lines), function()
+          clear_send_marks(buf)
+        end)
       end,
-      desc = "Mention all marked lines to this tab's Claude",
+      desc = "Send all marked lines to this tab's Claude",
     },
     {
       "<leader>as",
@@ -320,22 +431,25 @@ return {
     {
       "<leader>aIM",
       function()
+        local buf = vim.api.nvim_get_current_buf()
         local file = vim.fn.expand("%:p")
+        local lines = get_send_mark_lines(buf)
+        if #lines == 0 then
+          vim.notify("No marked lines in this buffer (<leader>mm to mark)", vim.log.levels.WARN)
+          return
+        end
         local mentioned = {}
-        for i = string.byte("a"), string.byte("z") do
-          local mark = string.char(i)
-          local pos = vim.api.nvim_buf_get_mark(0, mark)
-          if pos[1] > 0 then
-            vim.cmd(("ClaudeCodeAdd %s %d %d"):format(vim.fn.fnameescape(file), pos[1], pos[1]))
-            table.insert(mentioned, mark .. ":" .. pos[1])
+        for _, line in ipairs(lines) do
+          local ok = pcall(vim.cmd, ("ClaudeCodeAdd %s %d %d"):format(vim.fn.fnameescape(file), line, line))
+          if not ok then
+            vim.notify("Failed to mention line " .. line .. " (marks left intact)", vim.log.levels.WARN)
+            return
           end
+          table.insert(mentioned, tostring(line))
         end
-        if #mentioned > 0 then
-          vim.notify("Mentioned marks -> " .. table.concat(mentioned, ", "))
-          vim.cmd("ClaudeCodeFocus")
-        else
-          vim.notify("No local marks (a-z) set in this buffer", vim.log.levels.WARN)
-        end
+        clear_send_marks(buf)
+        vim.notify("Mentioned lines -> " .. table.concat(mentioned, ", "))
+        vim.cmd("ClaudeCodeFocus")
       end,
       desc = "Mention all marked lines",
     },
@@ -398,3 +512,19 @@ return {
     })
   end,
 }
+
+table.insert(M.keys, { "<leader>mm", toggle_send_mark, mode = "n", desc = "Toggle send-mark on this line" })
+table.insert(
+  M.keys,
+  { "<leader>mm", toggle_send_mark_visual, mode = "v", desc = "Toggle send-mark on selected lines" }
+)
+table.insert(M.keys, {
+  "<leader>mc",
+  function()
+    clear_send_marks(vim.api.nvim_get_current_buf())
+    vim.notify("Cleared all send marks in this buffer")
+  end,
+  desc = "Clear all send marks",
+})
+
+return M
