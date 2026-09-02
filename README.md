@@ -186,6 +186,7 @@
 
 Run **many Claudes at once**, arranged like tmux panes, shared across every Neovim
 window on the machine.
+<img width="1809" height="1143" alt="image" src="https://github.com/user-attachments/assets/41b4d39f-bba0-4443-b8b0-32ae05e0687a" />
 
 An agent is a **pane**, a group ("claude tab") is a **tmux window**, and all of it
 lives in one shared `claude-ws` session. Because a tmux pane id is unique
