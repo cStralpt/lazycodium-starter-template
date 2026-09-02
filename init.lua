@@ -5,6 +5,37 @@ if vim.g.vscode then
 else
   require("config.lazy")
   require("oil").setup()
+
+  -- `nvim <dir>` normally drops straight into oil.nvim's directory listing.
+  -- If persistence.nvim already has a saved session for that project, skip
+  -- the listing and just continue where we left off (buffers + layout),
+  -- like reopening a project in VSCode. No session on file -> unchanged
+  -- behavior, oil listing shows as before.
+  vim.api.nvim_create_autocmd("VimEnter", {
+    group = vim.api.nvim_create_augroup("auto_restore_project_session", { clear = true }),
+    nested = true,
+    callback = function()
+      if vim.fn.argc() ~= 1 then
+        return
+      end
+      -- oil.nvim renames the arg buffer to an "oil://<dir>" URL before
+      -- VimEnter fires, so strip that prefix before checking isdirectory.
+      local dir = vim.fn.argv(0):match("^oil://(.*)$") or vim.fn.argv(0)
+      if vim.fn.isdirectory(dir) == 0 then
+        return
+      end
+      local persistence = require("persistence")
+      local session = persistence.current()
+      if vim.fn.filereadable(session) == 0 then
+        session = persistence.current({ branch = false })
+      end
+      if vim.fn.filereadable(session) == 0 then
+        return
+      end
+      vim.cmd("silent! %bwipeout!")
+      persistence.load()
+    end,
+  })
   vim.api.nvim_command("highlight LineNr guifg=#bae67e ctermfg=149")
   vim.api.nvim_command("highlight CursorLineNr guifg=#ef6b73 ctermfg=203")
   vim.api.nvim_command("highlight CursorLine guibg=#1C1C3E")
