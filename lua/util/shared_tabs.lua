@@ -40,7 +40,7 @@ local M = {}
 -- side is subject to its cwd-relative-or-basename encoding quirk -- so
 -- searching for it needs the PREDICTED name, applied here at lookup time,
 -- not baked into what gets broadcast. See lua/util/instant_bufname.lua.
-local expected_bufname = require("util.instant_bufname").expected_bufname
+local find_synced_buf = require("util.instant_bufname").find_synced_buf
 
 local my_pid = vim.fn.getpid()
 
@@ -162,8 +162,27 @@ end
 ---the TabNew/BufReadPost hooks below aren't enough on their own.
 function M.write_snapshot(port)
   local snap = {}
-  for _, t in ipairs(vim.api.nvim_list_tabpages()) do
-    table.insert(snap, { file = find_file_in_tabpage(t) })
+  -- Which tab the host is ACTUALLY on, so a mirror can land there instead
+  -- of wherever tab creation happens to leave it (the last one). This is
+  -- not cosmetic: tab NUMBER is the correspondence key for everything
+  -- terminal-related in this feature -- floating_term.lua's tmux session,
+  -- shared_terminal.lua's wrap(), claude-code.lua's tmux_tab_session_name()
+  -- are all "<something>-root<port>-tab<N>". A mirror sitting on a
+  -- different tab number than its host therefore resolves EVERY one of
+  -- those to a different session and opens an empty terminal, while the
+  -- host's real one (still running, still in `tmux ls`) is nowhere to be
+  -- seen -- "I pressed <leader>iss and lost all my terminals and their
+  -- groups". Recorded per-entry rather than as a sibling key so the
+  -- snapshot stays a plain JSON array (`#snap` is load-bearing below), and
+  -- a snapshot written before this existed just has no entry flagged.
+  local current = vim.fn.tabpagenr()
+  -- The host's cwd travels with the snapshot because the receiver cannot
+  -- derive it: instant.nvim encodes a shared buffer's name relative to the
+  -- SENDER's cwd, so predicting that name needs the sender's cwd, not the
+  -- reader's. See util/instant_bufname.lua.
+  local cwd = vim.fn.getcwd()
+  for i, t in ipairs(vim.api.nvim_list_tabpages()) do
+    table.insert(snap, { file = find_file_in_tabpage(t), cwd = cwd, current = (i == current) or nil })
   end
   local f = io.open(snapshot_path(port), "w")
   if f then
@@ -222,7 +241,15 @@ local function broadcast_file()
   if file == "" then
     return
   end
-  append_event(port, { kind = "file", pid = my_pid, tab = vim.api.nvim_tabpage_get_number(0), file = file })
+  append_event(port, {
+    kind = "file",
+    pid = my_pid,
+    tab = vim.api.nvim_tabpage_get_number(0),
+    file = file,
+    -- See M.write_snapshot: the receiver needs OUR cwd, not its own, to
+    -- predict what instant.nvim will have named this file on its end.
+    cwd = vim.fn.getcwd(),
+  })
   bump_last_seen(port)
 end
 
@@ -241,23 +268,22 @@ local function broadcast_tabclosed(args)
   bump_last_seen(port)
 end
 
--- Poll for a buffer with EXACTLY `file` as its name (the absolute-path
--- convention instant.lua's own synced buffers use -- see that file's notes
--- on nvim_buf_set_name normalizing relative names to absolute ones), then
--- hand its bufnr to `apply` once found (or nil if it never showed up). A
--- light, self-contained duplicate of the same search in
--- lua/plugins/instant.lua, kept local rather than shared to avoid coupling
--- this file to instant.lua's internals.
-local function poll_for_buffer(file, attempts_left, apply)
-  for _, b in ipairs(vim.api.nvim_list_bufs()) do
-    if vim.api.nvim_buf_is_loaded(b) and vim.api.nvim_buf_get_name(b) == file then
-      apply(b)
-      return
-    end
+-- Poll until the buffer instant.nvim created for `file` shows up, then hand
+-- its bufnr to `apply` (or nil if it never did). Polling rather than a fixed
+-- delay because a synced buffer arrives whenever the network and the peer's
+-- startup get around to it. `sender_cwd` is the cwd of the window that
+-- shared the file -- see util/instant_bufname.lua for why identifying the
+-- buffer needs it, and why a wrong/missing one now degrades gracefully
+-- instead of never matching at all.
+local function poll_for_buffer(file, sender_cwd, attempts_left, apply)
+  local buf = find_synced_buf(file, sender_cwd)
+  if buf then
+    apply(buf)
+    return
   end
   if attempts_left > 0 then
     vim.defer_fn(function()
-      poll_for_buffer(file, attempts_left - 1, apply)
+      poll_for_buffer(file, sender_cwd, attempts_left - 1, apply)
     end, 200)
   else
     apply(nil)
@@ -292,8 +318,24 @@ local function bootstrap_from_snapshot(port, on_done)
     end
     return
   end
+  -- Land on the tab the HOST was on (see M.write_snapshot for why tab
+  -- numbers have to line up). Without this, whichever tab `tabnew` created
+  -- last is where this window stays -- always the highest-numbered one,
+  -- which is the host's tab only by coincidence. Done once bootstrap is
+  -- finished rather than up front, since do_tab's own `tabnew` calls move
+  -- the current tab as a side effect and would undo it.
+  local function land_on_host_tab()
+    for i, entry in ipairs(snap) do
+      if entry.current and vim.fn.tabpagenr("$") >= i then
+        pcall(vim.cmd, i .. "tabnext")
+        return
+      end
+    end
+  end
+
   local function do_tab(i)
     if i > #snap then
+      land_on_host_tab()
       if on_done then
         on_done()
       end
@@ -323,7 +365,7 @@ local function bootstrap_from_snapshot(port, on_done)
       do_tab(i + 1)
       return
     end
-    poll_for_buffer(expected_bufname(file), 150, function(buf)
+    poll_for_buffer(file, snap[i].cwd, 150, function(buf)
       if buf then
         pcall(vim.api.nvim_win_set_buf, win, buf)
       end
@@ -373,7 +415,7 @@ local function apply_event(event, on_done)
     -- No `replaying` guard needed here -- nvim_win_set_buf doesn't trigger
     -- BufNewFile/BufReadPost (see bootstrap_from_snapshot's comment above
     -- for why holding it across this async wait was actively harmful).
-    poll_for_buffer(expected_bufname(event.file), 150, function(buf)
+    poll_for_buffer(event.file, event.cwd, 150, function(buf)
       if buf then
         pcall(vim.api.nvim_win_set_buf, win, buf)
       end

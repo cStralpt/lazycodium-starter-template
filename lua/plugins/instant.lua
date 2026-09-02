@@ -4,7 +4,7 @@
 -- likely-free port automatically.
 --
 -- Every session a host starts on this machine gets recorded here (port,
--- file, when) so <leader>isp can show a picker of ALL known sessions to
+-- file, cwd, when) so <leader>isp can show a picker of ALL known sessions to
 -- join, not just the most recent one -- a single "last session" file isn't
 -- enough once more than one is running at a time. A host removes its own
 -- entry on <leader>isS; entries aren't otherwise verified live (no active
@@ -44,8 +44,22 @@ local function add_session(port, file)
       table.insert(filtered, entry)
     end
   end
-  table.insert(filtered, { port = port, file = file, time = os.time() })
+  -- The host's cwd is recorded alongside the file because a joiner cannot
+  -- infer it, and needs it to predict what instant.nvim will have named
+  -- the synced buffer on its own end -- see util/instant_bufname.lua.
+  table.insert(filtered, { port = port, file = file, cwd = vim.fn.getcwd(), time = os.time() })
   save_registry(filtered)
+end
+
+---The cwd the host of `port` recorded for itself, if this machine knows
+---about that session at all.
+local function session_cwd(port)
+  for _, entry in ipairs(load_registry()) do
+    if tostring(entry.port) == tostring(port) then
+      return entry.cwd
+    end
+  end
+  return nil
 end
 
 local function remove_session(port)
@@ -138,10 +152,13 @@ end
 --     glob-match (the LazyVim dashboard, in practice), which is exactly
 --     what broke navigation before.
 
--- See lua/util/instant_bufname.lua for why this ISN'T simply the original
--- absolute path -- that only round-trips correctly when the file happens
--- to be inside the sender's cwd, which real usage constantly violates.
-local expected_bufname = require("util.instant_bufname").expected_bufname
+-- Identifying a synced buffer is NOT just "look for its absolute path":
+-- instant.nvim renames it using a cwd-relative-or-basename encoding that
+-- only round-trips to the original path when the file happens to sit inside
+-- the sender's cwd, which real usage constantly violates. See
+-- lua/util/instant_bufname.lua, which owns that logic (and its fallback for
+-- when the two ends' cwds don't match at all).
+local find_synced_buf = require("util.instant_bufname").find_synced_buf
 
 local function lua_quote(s)
   return "'" .. s:gsub("\\", "\\\\"):gsub("'", "\\'") .. "'"
@@ -160,14 +177,20 @@ end
 -- being shared from that point on (the plugin also hooks BufRead), but the
 -- already-open mirror window won't auto-switch to it -- press <leader>iss
 -- again to get a mirror aimed at the file you're now on.
-local function spawn_mirror_window(port, target_name)
+local function spawn_mirror_window(port, file, cwd)
   local script = string.format(
     [[
 -- instant.nvim is lazy-loaded on <leader>iss/isj/isS, so a fresh nvim has
 -- none of its :Instant* commands defined yet until something triggers that
 -- load -- calling them directly errors with "E492: Not an editor command".
 require('lazy').load({ plugins = { 'instant.nvim' } })
-local target_name = %s
+-- The FILE, not a name computed here: identifying the synced buffer is the
+-- receiver's job (util/instant_bufname.lua), because only the receiver
+-- knows its own cwd -- which is what instant.nvim resolves the name it
+-- sends against. The host's cwd travels along as the sender's half of that
+-- encoding.
+local file = %s
+local sender_cwd = %s
 vim.defer_fn(function()
   local ok, err = pcall(vim.cmd, 'InstantJoinSession 127.0.0.1 %d')
   if not ok then
@@ -181,18 +204,18 @@ vim.defer_fn(function()
   -- one (see host_session's "already part of a session" check).
   vim.g.instant_root_port = %d
   vim.notify('instant.nvim: joined root session on port ' .. vim.g.instant_root_port, vim.log.levels.INFO)
-  if not target_name then
+  if not file then
     return
   end
+  local find_synced_buf = require('util.instant_bufname').find_synced_buf
   local attempts = 0
   local function try_focus()
     attempts = attempts + 1
-    for _, b in ipairs(vim.api.nvim_list_bufs()) do
-      if vim.api.nvim_buf_is_loaded(b) and vim.api.nvim_buf_get_name(b) == target_name then
-        vim.api.nvim_win_set_buf(0, b)
-        vim.notify('instant.nvim: focused ' .. target_name, vim.log.levels.INFO)
-        return
-      end
+    local buf = find_synced_buf(file, sender_cwd)
+    if buf then
+      vim.api.nvim_win_set_buf(0, buf)
+      vim.notify('instant.nvim: focused ' .. vim.api.nvim_buf_get_name(buf), vim.log.levels.INFO)
+      return
     end
     -- 150 attempts * 200ms = 30s -- the mirror window's own LazyVim startup
     -- (dashboard, ~30 plugins, possibly first-run treesitter/mason installs)
@@ -212,7 +235,7 @@ vim.defer_fn(function()
       end
       vim.notify(
         "instant.nvim: gave up waiting for '"
-          .. target_name
+          .. file
           .. "'. Buffers present: "
           .. table.concat(seen, " "),
         vim.log.levels.WARN
@@ -222,7 +245,8 @@ vim.defer_fn(function()
   vim.defer_fn(try_focus, 300)
 end, 300)
 ]],
-    target_name and lua_quote(target_name) or "nil",
+    file and file ~= "" and lua_quote(file) or "nil",
+    cwd and cwd ~= "" and lua_quote(cwd) or "nil",
     port,
     port
   )
@@ -258,7 +282,7 @@ local is_hosting = false
 -- Retries a few times in the rare case the random port is already taken.
 local function host_session()
   local file = current_tab_file()
-  local target_name = expected_bufname(file)
+  local cwd = vim.fn.getcwd()
 
   -- If THIS window is already part of a session -- as the original host, or
   -- as a mirror that was itself joined earlier -- don't start a competing
@@ -269,7 +293,7 @@ local function host_session()
   -- to whatever session this window is already in.
   if vim.g.instant_root_port then
     print("Root session is on port " .. vim.g.instant_root_port .. " -- opening another mirror of it")
-    spawn_mirror_window(vim.g.instant_root_port, target_name)
+    spawn_mirror_window(vim.g.instant_root_port, file, cwd)
     return
   end
 
@@ -291,6 +315,13 @@ local function host_session()
       vim.g.instant_root_port = port
       vim.cmd("InstantStartSession 127.0.0.1 " .. port)
       add_session(port, file)
+
+      -- Hand the floating terminal's existing workspace to this brand-new
+      -- session immediately, while its name is still unclaimed -- BEFORE
+      -- spawn_mirror_window below puts a second window in the race. See
+      -- util/floating_term.lua's claim_workspace for what goes wrong when
+      -- this is left until the next <C-/> instead.
+      require("util.floating_term").claim_workspace()
 
       -- Clear any stale event log/snapshot a PREVIOUS, unrelated session
       -- may have left behind under this exact port number -- see
@@ -330,8 +361,8 @@ local function host_session()
         end,
       })
 
-      if target_name then
-        print("Root session: hosting " .. target_name .. " on port " .. port .. " -- opening mirror window")
+      if file ~= "" then
+        print("Root session: hosting " .. file .. " on port " .. port .. " -- opening mirror window")
       else
         print(
           "Root session started on port "
@@ -340,7 +371,7 @@ local function host_session()
             .. " Open a file, then press <leader>iss again to mirror it."
         )
       end
-      spawn_mirror_window(port, target_name)
+      spawn_mirror_window(port, file, cwd)
       return
     end
     ::continue::
@@ -351,16 +382,15 @@ end
 -- Same polling idea as spawn_mirror_window's generated script, but running
 -- in-process (no jobstart/script file needed) since this join happens in
 -- the current nvim, not a spawned one.
-local function poll_and_focus(target_name, attempts_left)
-  for _, b in ipairs(vim.api.nvim_list_bufs()) do
-    if vim.api.nvim_buf_is_loaded(b) and vim.api.nvim_buf_get_name(b) == target_name then
-      vim.api.nvim_win_set_buf(0, b)
-      return
-    end
+local function poll_and_focus(file, sender_cwd, attempts_left)
+  local buf = find_synced_buf(file, sender_cwd)
+  if buf then
+    vim.api.nvim_win_set_buf(0, buf)
+    return
   end
   if attempts_left > 0 then
     vim.defer_fn(function()
-      poll_and_focus(target_name, attempts_left - 1)
+      poll_and_focus(file, sender_cwd, attempts_left - 1)
     end, 200)
   else
     local seen = {}
@@ -370,7 +400,7 @@ local function poll_and_focus(target_name, attempts_left)
       end
     end
     vim.notify(
-      "instant.nvim: gave up waiting for '" .. target_name .. "'. Buffers present: " .. table.concat(seen, " "),
+      "instant.nvim: gave up waiting for '" .. file .. "'. Buffers present: " .. table.concat(seen, " "),
       vim.log.levels.WARN
     )
   end
@@ -386,18 +416,27 @@ end
 ---was on when it started that session, so joining from a bare dashboard
 ---still lands you on a real file instead of just leaving it on dashboard
 ---with the session connected but nothing displayed.
-local function do_join(port, fallback_file)
+---@param fallback_cwd string? the host's cwd, for the same reason
+local function do_join(port, fallback_file, fallback_cwd)
   pcall(vim.cmd, "InstantStop")
   local file = current_tab_file()
   if file == "" and fallback_file and fallback_file ~= "" then
     file = fallback_file
   end
-  local target_name = expected_bufname(file)
+  -- Whoever shared this file did the naming, so the prediction has to use
+  -- THEIR cwd. Ours only coincides with it for the auto-spawned mirror.
+  local sender_cwd = fallback_cwd or session_cwd(port)
   vim.cmd("InstantJoinSession 127.0.0.1 " .. port)
   vim.g.instant_root_port = tonumber(port)
-  if target_name then
+  -- Same reasoning as host_session's call: claim while the name is still
+  -- unclaimed. Normally a no-op here (the host got there first); it only
+  -- does anything when nobody in the session has opened a float yet, in
+  -- which case this window's own workspace becomes the shared one rather
+  -- than being abandoned.
+  require("util.floating_term").claim_workspace()
+  if file ~= "" then
     vim.defer_fn(function()
-      poll_and_focus(target_name, 150)
+      poll_and_focus(file, sender_cwd, 150)
     end, 300)
   end
 end
@@ -454,7 +493,7 @@ local function pick_session()
       age_str,
       current
     )
-    table.insert(items, { label = label, port = entry.port, file = entry.file })
+    table.insert(items, { label = label, port = entry.port, file = entry.file, cwd = entry.cwd })
   end
 
   vim.ui.select(items, {
@@ -464,7 +503,7 @@ local function pick_session()
     end,
   }, function(choice)
     if choice then
-      do_join(choice.port, choice.file)
+      do_join(choice.port, choice.file, choice.cwd)
     end
   end)
 end
@@ -473,6 +512,20 @@ return {
   "jbyuki/instant.nvim",
   init = function()
     vim.g.instant_username = vim.env.USER or "user"
+    -- instant.nvim's `g:instant_only_cwd` defaults to TRUE, which makes it
+    -- silently refuse to share any buffer whose path isn't under the
+    -- sender's cwd -- see its instantOpenOrCreateBuffer(): it computes
+    -- fnamemodify(name, ":.") and, when that shortens nothing (i.e. the
+    -- file is outside cwd), skips the buffer entirely. No error, no notice,
+    -- the file just never appears in the other window. That is exactly the
+    -- reported "sometimes some files/buffers aren't shared across session
+    -- windows": whether a file syncs depended on whether it happened to
+    -- live under the cwd of whichever window opened it, which for this
+    -- workflow (one Neovim, several sibling project dirs -- mobile-app,
+    -- api, agent-api) is roughly a coin flip. Files outside cwd fall back
+    -- to a basename-only name on the wire, which util/instant_bufname.lua
+    -- already predicts.
+    vim.g.instant_only_cwd = false
     -- The collaboration layer's own magic: makes any terminal spawned
     -- anywhere (Claude, a shell, whatever) transparently mirror across
     -- collaborative windows once a root session exists. No other plugin

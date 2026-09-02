@@ -66,20 +66,42 @@ local SEVERITY = {
   hint_diagnostic = rainbow.accents[9],
 }
 
-local function apply_highlights()
+---Base color, this tabpage's accent, and the three tiers of "not selected":
+---empty line, hidden buffer, buffer visible in another split. Kept as flat
+---grays at increasing lift -- same reasoning as chip_colors(): "colored vs.
+---gray" should be the whole story, so the inactive tabs must never compete
+---with the one accent-filled tab. Recomputed on each call rather than cached
+---because the accent follows the current tabpage.
+local function state_colors()
   local base = rainbow.base_bg()
   local accent = rainbow.current_accent()
-
-  -- Three tiers of "not selected": empty line, hidden buffer, buffer visible
-  -- in another split. Kept as flat grays at increasing lift -- same reasoning
-  -- as chip_colors(): "colored vs. gray" should be the whole story, so the
-  -- inactive tabs must never compete with the one accent-filled tab.
-  local states = {
+  return base, accent, {
     -- suffix,      bg,                                    fg
     { "", rainbow.blend("#ffffff", base, 0.06), rainbow.blend("#ffffff", base, 0.40) },
     { "_visible", rainbow.blend("#ffffff", base, 0.11), rainbow.blend("#ffffff", base, 0.62) },
     { "_selected", accent, base },
   }
+end
+
+---Repaint ONE generated filetype-icon group onto our pill. Split out of the
+---sweep below so a group can also be fixed the instant bufferline creates
+---it -- see the wrapper in `config`.
+local function paint_icon_group(name)
+  local base, accent, states = state_colors()
+  local suffix = name:match("Selected$") or name:match("Inactive$") or ""
+  local def = vim.api.nvim_get_hl(0, { name = name })
+  vim.api.nvim_set_hl(0, name, {
+    bg = ({ [""] = states[1][2], Inactive = states[2][2], Selected = accent })[suffix],
+    -- Inactive tabs keep the icon's real color (same call as letting
+    -- diagnostics keep their severity hue on gray), but on the accent fill
+    -- the icon inverts to the base background like everything else -- a
+    -- saturated icon color on a saturated fill is unreadable.
+    fg = suffix == "Selected" and base or (def.fg and string.format("#%06x", def.fg) or nil),
+  })
+end
+
+local function apply_highlights()
+  local base, accent, states = state_colors()
 
   for _, state in ipairs(states) do
     local suffix, bg, fg = state[1], state[2], state[3]
@@ -108,8 +130,17 @@ local function apply_highlights()
   -- colors it computed at SETUP time, then caches the group permanently --
   -- so every icon keeps the stock dark background and renders as a black box
   -- punched through our pill. Repainting the generated groups after the fact
-  -- is the only way in; they're created lazily as each filetype first
-  -- appears, which is why BufEnter re-runs this.
+  -- is the only way in.
+  --
+  -- This sweep can only reach groups that ALREADY EXIST, and bufferline
+  -- creates each one lazily, the first time a buffer of that filetype is
+  -- actually drawn in the tabline -- i.e. always AFTER the last time this
+  -- ran. That is the "new tab shows a boxed icon until I navigate to that
+  -- file" bug: nothing was wrong with the color, the group simply didn't
+  -- exist yet to be repainted, and visiting the file fired the BufEnter that
+  -- re-ran this. The wrapper installed in `config` closes that window by
+  -- repainting each group at the moment of creation; the sweep stays for
+  -- everything already on screen when the accent changes.
   --
   -- The group name is "BufferLine" .. <the icon provider's own hl group> ..
   -- state. LazyVim ships mini.icons (whose groups are `MiniIconsBlue`,
@@ -117,19 +148,9 @@ local function apply_highlights()
   -- "nvim-web-devicons" only succeeds because mini.icons installs a shim, and
   -- the real groups here are `BufferLineMiniIconsYellowSelected` and friends.
   -- Both prefixes are matched so this survives a swap back to devicons.
-  local icon_bg = { [""] = states[1][2], Inactive = states[2][2], Selected = accent }
-  for name, def in pairs(vim.api.nvim_get_hl(0, {})) do
+  for name in pairs(vim.api.nvim_get_hl(0, {})) do
     if name:find("^BufferLineMiniIcons") or name:find("^BufferLineDevIcon") then
-      local suffix = name:match("Selected$") or name:match("Inactive$") or ""
-      local selected = suffix == "Selected"
-      vim.api.nvim_set_hl(0, name, {
-        bg = icon_bg[suffix],
-        -- Inactive tabs keep the devicon's real color (same call as letting
-        -- diagnostics keep their severity hue on gray), but on the accent
-        -- fill the icon inverts to the base background like everything else
-        -- -- a saturated icon color on a saturated fill is unreadable.
-        fg = selected and base or (def.fg and string.format("#%06x", def.fg) or nil),
-      })
+      paint_icon_group(name)
     end
   end
 
@@ -208,6 +229,23 @@ return {
   },
   config = function(_, opts)
     require("bufferline").setup(opts)
+
+    -- Paint each filetype-icon group the moment bufferline generates it,
+    -- rather than waiting for the next sweep (see apply_highlights). Wrapped
+    -- rather than hooked because there is no event for "bufferline created a
+    -- highlight group", and its own icon_hl_cache means it sets each one
+    -- exactly once, during tabline rendering -- so the only reliable moment
+    -- to correct it is immediately after that single call.
+    local hl = require("bufferline.highlights")
+    local set_icon_highlight = hl.set_icon_highlight
+    hl.set_icon_highlight = function(...)
+      local name = set_icon_highlight(...)
+      if name then
+        paint_icon_group(name)
+      end
+      return name
+    end
+
     -- Carried over from LazyVim's own bufferline config, which this `config`
     -- function replaces: without it the tabline goes stale when buffers are
     -- added or wiped outside of a redraw.
