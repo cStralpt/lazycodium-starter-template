@@ -72,9 +72,20 @@ local function show_existing(state)
 end
 
 local function spawn_new(state, cmd)
+  -- Resolve root/cwd from the buffer that's current BEFORE open_win() below
+  -- switches focus to the new (unnamed) terminal buffer -- LazyVim.root.get()
+  -- keys off the current buffer's file path, so calling it after the switch
+  -- always saw an empty scratch buffer and silently fell back to cwd.
+  --
+  -- <leader>ac (claude) runs from the project root, like <leader>e (Snacks
+  -- Explorer root dir); <leader>at (plain shell) stays on cwd, like
+  -- <leader>E (Snacks Explorer cwd), so you can cd around in it manually.
+  local source_buf = vim.api.nvim_get_current_buf()
+  local cwd = cmd == "claude" and LazyVim.root.get({ buf = source_buf }) or vim.fn.getcwd(0)
+
   local win, buf = open_win(state.floating, nil)
   state.win = win
-  vim.fn.termopen(cmd, { cwd = vim.fn.getcwd(0) })
+  vim.fn.termopen(cmd, { cwd = cwd })
   state.buf = buf
   -- Matches shared_terminal.lua's wrap() label exactly, so
   -- tmux_tab_session_name() below can find the right shared session
