@@ -184,19 +184,8 @@
 
 ## 🤖 Claude Code in Neovim
 
-Run **many Claudes at once**, arranged like tmux panes, shared across every Neovim
-window on the machine.
+Run **many Claudes at once**, shared across every Neovim window on the machine.
 <img width="1809" height="1143" alt="image" src="https://github.com/user-attachments/assets/41b4d39f-bba0-4443-b8b0-32ae05e0687a" />
-
-An agent is a **pane**, a group ("claude tab") is a **tmux window**, and all of it
-lives in one shared `claude-ws` session. Because a tmux pane id is unique
-server-wide, an agent started in one terminal window is a send target from every
-other one — and tmux does the tiling, so several Claudes are visible side by side
-without fighting your editor for space.
-
-The workspace survives quitting one Neovim and is torn down once the **last** one
-using it exits (reference-counted, and stale entries from a crashed instance are
-reaped by pid so they can't pin it alive forever).
 
 Requires `tmux`.
 
