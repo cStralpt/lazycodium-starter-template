@@ -105,6 +105,30 @@ local function ensure_session()
     end
   end
 
+  -- Scrollback. `tmux attach` runs on the ALTERNATE screen, so Neovim's own
+  -- terminal scrollback for this buffer is permanently empty -- scrolling up
+  -- in the Neovim window can never reach anything tmux drew, no matter how
+  -- large 'scrollback' is. The history lives in tmux, one independent buffer
+  -- PER PANE, and the only way in is tmux's copy-mode. With `mouse off`
+  -- (tmux's default, and nothing here used to change it) the wheel isn't
+  -- bound to anything either, so nothing scrolls at all -- output above the
+  -- viewport just looks truncated.
+  --
+  -- `mouse on` binds the wheel to "enter copy-mode in the pane UNDER THE
+  -- CURSOR", which is exactly per-pane scrolling for splits: each pane
+  -- scrolls its own history, independently, and panes that aren't hovered
+  -- stay put. Neovim forwards the wheel to the job whenever the program
+  -- asked for mouse reporting (mouse=a here), so this works through the
+  -- float without any Neovim-side mapping.
+  --
+  -- Set on EVERY call, not just at session creation: an already-running
+  -- session (e.g. one started before this block existed, or by another
+  -- collaborator) picks the options up too. history-limit only applies to
+  -- panes created after it, so existing panes keep their old 2000 lines.
+  vim.fn.system({ "tmux", "set-option", "-g", "mouse", "on" })
+  vim.fn.system({ "tmux", "set-option", "-g", "history-limit", "50000" })
+  vim.fn.system({ "tmux", "set-window-option", "-g", "mode-keys", "vi" })
+
   local mine = my_session()
   if mine ~= canonical then
     if not session_alive(mine) then
