@@ -1,0 +1,110 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/cstralpt/.config/nvim/claude/agent-status.sh",
+            "args": [
+              "idle"
+            ],
+            "async": true,
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/cstralpt/.config/nvim/claude/agent-status.sh",
+            "args": [
+              "working",
+              "parse"
+            ],
+            "async": true,
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/cstralpt/.config/nvim/claude/agent-status.sh",
+            "args": [
+              "working"
+            ],
+            "async": true,
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt|elicitation_dialog|agent_needs_input",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/cstralpt/.config/nvim/claude/agent-status.sh",
+            "args": [
+              "waiting"
+            ],
+            "async": true,
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "idle_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/cstralpt/.config/nvim/claude/agent-status.sh",
+            "args": [
+              "idle"
+            ],
+            "async": true,
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/cstralpt/.config/nvim/claude/agent-status.sh",
+            "args": [
+              "done",
+              "parse"
+            ],
+            "async": true,
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/cstralpt/.config/nvim/claude/agent-status.sh",
+            "args": [
+              "gone"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

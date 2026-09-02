@@ -29,6 +29,7 @@
 -- looking at the same group already agree on it with no syncing.
 
 local rainbow = require("util.rainbow_tabs")
+local status = require("util.claude_agent_status")
 
 local M = {}
 
@@ -45,7 +46,13 @@ local ws = require("util.tmux_workspace").new({
   -- instead -- it survives you quitting ONE Neovim, and goes away when the last
   -- one using it exits.
   kill_when_last = true,
-  cmd = "claude",
+  -- --settings, not ~/.claude/settings.json: this attaches the status-reporting
+  -- hooks (claude/hooks.settings.json) to exactly the Claudes this workspace
+  -- starts, and to nothing else. It is additive -- your normal settings still
+  -- load -- so a Claude you run by hand in any other terminal is unaffected and
+  -- reports nothing, which is correct, because it is not an agent this
+  -- workspace can address.
+  cmd = "claude --settings " .. vim.fn.expand("~/.config/nvim/claude/hooks.settings.json"),
   -- Never set tmux's GLOBAL default-command here -- that would make every new
   -- tmux window on this machine, including the <C-/> terminal's, run claude.
   -- Each window and pane gets `claude` passed explicitly instead.
@@ -69,14 +76,22 @@ M.workspace = ws
 ---@field group_active boolean this agent's group is the one currently on screen
 ---@field name string display label
 ---@field cwd string
+---@field status string? "working" | "waiting" | "done" | "idle", or nil if this
+---       agent has never reported -- see util/claude_agent_status.lua
 
 ---Every agent, in group then pane order. Read live from tmux on each call --
 ---there is no registry to drift out of sync with reality, which is what made
 ---the previous versions accumulate phantom agents.
 ---@return ClaudeAgent[]
-function M.list()
+---Turn raw panes into agents. Split out of M.list so the statusline's async
+---refresh produces exactly the same records as the blocking path -- two
+---slightly different notions of "an agent" is precisely the drift the live-read
+---design was meant to avoid.
+---@param panes table[]
+---@return ClaudeAgent[]
+function M.decorate(panes)
   local agents = {}
-  for _, p in ipairs(ws.list_panes()) do
+  for _, p in ipairs(panes) do
     agents[#agents + 1] = {
       slot = #agents + 1,
       pane = p.pane,
@@ -85,9 +100,14 @@ function M.list()
       group_active = p.group_active,
       cwd = p.cwd,
       name = vim.fn.fnamemodify(p.cwd ~= "" and p.cwd or vim.fn.getcwd(), ":t"),
+      status = status.get(p.pane),
     }
   end
   return agents
+end
+
+function M.list()
+  return M.decorate(ws.list_panes())
 end
 
 ---The agent sends go to: tmux's active pane in the group you're looking at.
@@ -605,7 +625,15 @@ function M.pick()
       text = ("group %d"):format(g),
     }
     for nth, a in ipairs(by_group[g]) do
-      local text = summary(a.pane)
+      -- What Claude reported, falling back to the scraped pane. The fallback
+      -- still earns its keep: an agent started before these hooks existed, or
+      -- one launched outside this workspace, reports nothing at all -- and a
+      -- quoted line off the screen beats a blank row, which is what those rows
+      -- were showing.
+      local text, marker = status.summary(a.pane)
+      if text == "" then
+        text, marker = summary(a.pane), ""
+      end
       items[#items + 1] = {
         kind = "pane",
         agent = a,
@@ -616,6 +644,7 @@ function M.pick()
         -- coordinates, so "vsdaasd" finds the agent you typed that into.
         text = ("%d %d %s %s %s"):format(a.slot, a.group, a.name, a.cwd, text),
         summary = text,
+        marker = marker,
       }
     end
   end
@@ -634,6 +663,8 @@ function M.pick()
           -- as one column; the number is that hue shaded by position.
           { a.active and " \u{258c}" or " \u{2502}", group_hl(a.group) },
           { (" %d "):format(a.slot), item.hl },
+          { ("%-1s "):format(status.glyph(a.pane)), a.status == "waiting" and "DiagnosticWarn" or "SnacksPickerDimmed" },
+          { item.marker ~= "" and (item.marker .. " ") or "", "SnacksPickerDimmed" },
           { item.summary ~= "" and item.summary or "(empty)", item.summary ~= "" and "SnacksPickerLabel" or "SnacksPickerDimmed" },
         }
       end,
@@ -691,6 +722,170 @@ function _G.ClaudeAgentPillClick(slot)
   ws.show()
 end
 
+---Index of the leftmost rendered agent. Lives on M rather than in a closure so
+---the click handler and the component agree without either owning the other.
+M._offset = 1
+
+---Pane of the agent the window last followed, so a focus CHANGE can be told
+---apart from the many repaints where focus merely stayed where it was.
+M._followed_pane = nil
+
+---Pages the board by one agent. One at a time rather than a screenful because
+---the window is already sized to whatever fits, so a "screenful" is a number
+---that changes with the branch name -- clicking twice and landing somewhere
+---unpredictable is worse than clicking twice and moving two.
+---@param dir integer 1 = left, 2 = right
+function _G.ClaudeAgentBoardPage(dir)
+  M._offset = math.max((M._offset or 1) + (dir == 1 and -1 or 1), 1)
+  -- Straight to redrawstatus, not M.redraw's vim.schedule: paging only moves an
+  -- offset the very next render reads, and with the board cached that render is
+  -- pure string building. Skipping the loop hop is the difference between "it
+  -- moved" and "it moved a moment later".
+  pcall(vim.cmd.redrawstatus)
+end
+
+---The agent list the STATUSLINE draws from, refreshed off to the side.
+---
+---M.list() forks two tmux subprocesses. That is right for a send, where a stale
+---list means a message typed into the wrong agent -- and completely wrong on a
+---redraw path, which Neovim walks on every keystroke, cursor move and mode
+---change. The board was paying ~4ms of blocking fork per render, which is what
+---made clicking an overflow arrow feel like it lagged: the click was instant,
+---the repaint behind it was not.
+---
+---Same shape as the workspace winbar's indicator cache, for the same reason.
+---The staleness this admits is a pane appearing up to BOARD_TTL late on the
+---statusline; agent STATUS doesn't ride on this at all -- that arrives by
+---fs_event and repaints immediately.
+local board = { agents = {}, at = 0, pending = false, primed = false }
+local BOARD_TTL = 400
+
+local function board_agents()
+  local now = vim.uv.now()
+  if not board.primed then
+    -- The first render has nothing to show yet, and one blocking call is
+    -- better than an empty board that pops in a frame later.
+    board.primed, board.agents, board.at = true, M.list(), now
+  elseif now - board.at > BOARD_TTL and not board.pending then
+    board.pending = true
+    ws.list_panes_async(function(panes)
+      board.pending, board.at = false, vim.uv.now()
+      if panes then
+        board.agents = M.decorate(panes)
+        M.redraw()
+      end
+    end)
+  end
+  return board.agents
+end
+
+---How many columns the board may spend.
+---
+---Measured, not assumed: a wider monitor should show more agents and hide
+---fewer, and every column reserved for something that isn't currently rendering
+---is a pill thrown away. So each neighbour on the line is counted only when it
+---is actually there -- no repo means no branch segment, a clean buffer means no
+---churn readout, and on both the board simply gets the space.
+---
+---The one estimate left is the mode block, which is sized to the longest mode
+---name rather than the current one so the board doesn't reflow every time you
+---press `i`. A stable board that is occasionally two columns shy beats one that
+---twitches on every mode change.
+local function board_budget()
+  -- With globalstatus the line spans the screen; without it, one window's width.
+  local width = vim.o.laststatus == 3 and vim.o.columns or vim.api.nvim_win_get_width(0)
+
+  local reserve = 11 -- " TERMINAL " plus its separator
+  local gs = vim.b.gitsigns_status_dict
+  if gs then
+    if gs.head and gs.head ~= "" then
+      reserve = reserve + vim.fn.strdisplaywidth(gs.head) + 4 -- icon, padding, separator
+    end
+    for _, key in ipairs({ "added", "changed", "removed" }) do
+      local n = gs[key]
+      if n and n > 0 then
+        reserve = reserve + 3 + #tostring(n) -- icon, space, digits
+      end
+    end
+  end
+
+  return math.max(width - reserve - 2, 20)
+end
+
+---Width of an overflow arrow plus its count and trailing space.
+local function arrow_width(n)
+  return 2 + #tostring(n)
+end
+
+---The slice of agents to render: as many as fit from M._offset.
+---
+---`follow` slides the window to keep `active` visible. It is passed only when
+---focus has CHANGED since the last render, and that condition is the whole
+---reason this is a parameter rather than something the function decides for
+---itself: following on every repaint silently reverted every arrow click a
+---render later, because the click moves the offset and the next redraw slid it
+---straight back. Follow on a focus change, obey the user in between.
+---@return integer first, integer last
+local function window(widths, budget, active, follow)
+  local n = #widths
+  local offset = math.min(math.max(M._offset or 1, 1), n)
+
+  -- Reserve room for both arrows up front when everything cannot fit anyway.
+  -- Cheaper than solving the mutual dependency between "does an arrow show"
+  -- and "how many pills fit", and wrong only by a column or two.
+  local total = 0
+  for _, w in ipairs(widths) do
+    total = total + w + 1
+  end
+  local room = total <= budget and budget or budget - (arrow_width(n) * 2 + 2)
+
+  local function last_from(start)
+    local used, last = 0, start - 1
+    for i = start, n do
+      local w = widths[i] + (i > start and 1 or 0)
+      if used + w > room and i > start then
+        break
+      end
+      used, last = used + w, i
+    end
+    return last
+  end
+
+  if follow then
+    if active < offset then
+      offset = active
+    end
+    while active > last_from(offset) and offset < active do
+      offset = offset + 1
+    end
+  end
+  return offset, last_from(offset)
+end
+
+---A bold `‹2` / `3›` standing in for the agents that did not fit.
+---
+---The colour carries the reason you would look. If ANY hidden agent wants
+---something from you, the arrow goes red -- an agent blocked on you must never
+---become invisible just because it scrolled off, which is the one way this
+---whole feature could make things worse than the overflowing bar it replaced.
+---Otherwise it takes the accent of the nearest hidden agent, which keeps it
+---inside the one-agent-one-colour rule and hints at what is out there.
+---
+---@param dir integer click id: 1 pages left, 2 pages right
+local function overflow_arrow(agents, from, to, glyph, dir)
+  local hl = "ClaudeAgentSlot" .. agents[dir == 1 and to or from].slot
+  for i = from, to do
+    local st = status.get(agents[i].pane)
+    if st == "waiting" or st == "done" then
+      hl = "ClaudeAgentArrowAlert"
+      break
+    end
+  end
+  local n = to - from + 1
+  local text = dir == 1 and (glyph .. n) or (n .. glyph)
+  return ("%%%d@v:lua.ClaudeAgentBoardPage@%%#%s#%s%%X"):format(dir, hl, text)
+end
+
 ---lualine component: one rainbow pill per agent.
 ---
 ---Color carries IDENTITY: each agent takes the accent for its slot from the
@@ -703,23 +898,80 @@ end
 ---neighbours. The number is printed on the pill, so a count-send (2<leader>as)
 ---is always read, never recalled.
 ---
----Deliberately no status glyphs. Neovim cannot see inside a Claude process --
----the only signals are scraping its rendered terminal (guesswork, and useless
----under bypass-permissions where the prompts it looked for never appear) or
----hooks, which would mean changing global Claude settings. Rather than paint a
----confident glyph over a guess, this shows only what is knowable.
+---STATUS is the glyph after the name, and it is knowable now: Claude's own
+---hooks report it (util/claude_agent_status.lua). The two channels stay
+---independent on purpose -- colour never means status and the glyph never means
+---identity -- so "which agent" and "what is it doing" can be read separately
+---rather than decoded from one blob of colour.
+---
+---  !  blocked on you        ✓  finished its turn, output unread
+---  …  running tools          (none) idle, or not reporting
+---  ◇  plan mode              ⚡ permissions bypassed -- it will never ask, so
+---                               it can never show `!`
+---
+---An agent that wants something from you also gets the task it was given and
+---how long it has been sat there ("✓ add tests 14m"); one that is merely busy
+---does not, so three agents don't cost 75 columns. util/claude_agent_status.lua
+---owns those rules.
+---
+---An agent that never reports -- a Claude started before these hooks existed,
+---or one launched outside this workspace -- simply has no glyph, which is
+---exactly what this line used to show for everything.
 ---
 ---Returns "" with no agents, so a plain editing session has a clean right side.
+---
+---OVERFLOW. A statusline cannot scroll -- it is one string rendered into a
+---fixed row, with no viewport to offset and no wheel events reaching it. So the
+---board WINDOWS instead: it measures its pills against the columns actually
+---available and renders only the slice that fits, with clickable arrows to page
+---through the rest one agent at a time. Same outcome as scrolling, by the only
+---mechanism a statusline has.
+---
+---The window follows focus, so the agent `<leader>as` targets is never the one
+---you cannot see.
 function M.lualine()
-  local agents = M.list()
+  local agents = board_agents()
   if #agents == 0 then
     return ""
   end
-  local parts = {}
-  for _, a in ipairs(agents) do
-    local label = ("%d %s"):format(a.slot, a.name)
-    parts[#parts + 1] = rainbow.pill(a.slot, a.active, label, "v:lua.ClaudeAgentPillClick")
+
+  local labels, widths, active_i = {}, {}, 1
+  for i, a in ipairs(agents) do
+    local detail = status.render(a.pane)
+    labels[i] = detail ~= "" and ("%d %s %s"):format(a.slot, a.name, detail) or ("%d %s"):format(a.slot, a.name)
+    -- Two cap glyphs and the two spaces rainbow.pill puts around the label.
+    -- Measured with strdisplaywidth, not #, because every glyph in a label
+    -- above the digits is multibyte and several are double-width.
+    widths[i] = vim.fn.strdisplaywidth(labels[i]) + 4
+    if a.active then
+      active_i = i
+    end
   end
+
+  -- Follow focus only when it moved. Paging away from the active agent is a
+  -- deliberate act -- you are looking at what else is running -- and it should
+  -- survive until you actually switch agents.
+  local active_pane = agents[active_i].pane
+  local follow = M._followed_pane ~= active_pane
+  M._followed_pane = active_pane
+
+  local budget = board_budget()
+  local first, last = window(widths, budget, active_i, follow)
+  -- Written back already clamped, so paging past either end self-corrects on
+  -- the next render instead of accumulating a runaway offset.
+  M._offset = first
+
+  local parts = {}
+  if first > 1 then
+    parts[#parts + 1] = overflow_arrow(agents, 1, first - 1, "\u{2039}", 1)
+  end
+  for i = first, last do
+    parts[#parts + 1] = rainbow.pill(agents[i].slot, agents[i].active, labels[i], "v:lua.ClaudeAgentPillClick")
+  end
+  if last < #agents then
+    parts[#parts + 1] = overflow_arrow(agents, last + 1, #agents, "\u{203a}", 2)
+  end
+
   return table.concat(parts, " ") .. "%#lualine_c_normal#"
 end
 
@@ -742,6 +994,9 @@ local function define_slot_hls()
   for i = 1, #rainbow.accents * 2 do
     vim.api.nvim_set_hl(0, "ClaudeAgentSlot" .. i, { fg = rainbow.color(i), bold = true })
   end
+  -- Red, from the same palette (it is lualine's REPLACE colour), for an
+  -- overflow arrow hiding an agent that wants you.
+  vim.api.nvim_set_hl(0, "ClaudeAgentArrowAlert", { fg = rainbow.accents[7], bold = true })
 end
 
 local started = false
@@ -752,15 +1007,19 @@ function M.setup()
   end
   started = true
   define_slot_hls()
+  -- Repaint on report rather than only on the timer below: the point of the
+  -- whole mechanism is that "this agent is blocked on you" shows up when it
+  -- happens, not up to one tick later.
+  status.setup(M.redraw)
   vim.api.nvim_create_autocmd("ColorScheme", {
     callback = function()
       vim.schedule(define_slot_hls)
     end,
   })
-  -- One slow timer, and all it does is repaint: the agent list is read live
-  -- from tmux, so this exists only so agents another Neovim window starts show
-  -- up here on their own. Two `tmux list-*` calls every 5s, flat regardless of
-  -- how many agents are running.
+  -- One slow timer, and all it does is repaint: this exists only so agents
+  -- another Neovim window starts show up here on their own. It costs nothing by
+  -- itself -- the render behind it reads the cached board, which refreshes
+  -- asynchronously at most every BOARD_TTL and never blocks the redraw.
   local timer = vim.uv.new_timer()
   timer:start(1000, 5000, vim.schedule_wrap(M.redraw))
 end

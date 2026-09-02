@@ -213,7 +213,7 @@ new to learn.
 | `<leader>a]` / `<leader>a[` | Next / previous group |
 | `<leader>ax` | Close this agent |
 | `<leader>az` | Show only this agent — hides the others in its group, press again to restore |
-| `<leader>af` | Pick an agent (grouped, with a live preview of each pane) |
+| `<leader>af` | Pick an agent (grouped, labelled, with a live preview of each pane) |
 | `<leader>am` | Move this agent — pick which tab to land beside, or a new group of its own |
 | `<C-h/j/k/l>` | Move between panes |
 
@@ -247,6 +247,147 @@ One agent is one colour everywhere. A group owns an accent — the same one its 
 carries on the workspace winbar and the statusline — and the tabs inside it are
 shades of that hue, so a row tells you which group it belongs to before you've read
 any text.
+
+### Statusline
+
+Mostly empty, on purpose. The bufferline tab above it already draws the filetype
+icon, filename, modified dot and diagnostic counts for the current buffer, so a
+`root › icon › path › diagnostics` breadcrumb underneath was the same information
+twice — three times for the repo name, which lands on the agent pill as well.
+
+What's left is only what nothing else on screen says:
+
+```
+ NORMAL │  main                                    +12 ~3   1 ✓
+   mode    branch                                   churn    agents
+```
+
+`+12 ~3` is the gitsigns diff for the current buffer — how much of what you're
+looking at isn't yours yet. Both right-hand segments render empty when they have
+nothing to report, so a plain editing session gets a clean bar.
+
+Trade-off: bufferline truncates long tab labels and the full name now lives
+nowhere — `:f` still prints it. Everything removed is listed with its reasoning at
+the top of `lua/plugins/lualine.lua`, including how to put each piece back.
+
+### Agent status
+
+One agent is one colour everywhere — but colour says **which** agent, never what it
+is doing. Status is a separate channel: a glyph on the pill, so the two can be read
+independently rather than decoded from one blob of colour.
+
+| Glyph | Meaning |
+| --- | --- |
+| `!` | Blocked on you — permission prompt, MCP elicitation, or asking for input |
+| `✓` | Finished its turn; you haven't read the output yet |
+| `…` | Running tools |
+| *(none)* | Idle, or not reporting |
+| `◇` | Plan mode — it won't edit anything |
+| `⚡` | Permissions bypassed — it will never stop to ask, so it can never show `!` |
+
+A number alone can't separate two agents working in the same repo, so an agent that
+**wants something from you** also carries what it was asked and how long it's been
+sat there. One that's merely busy doesn't — three agents at full detail would be
+~75 columns and would re-clutter the bar. Width is spent where attention is due, so
+the pill's own size is a signal before you read any text:
+
+```
+ 1 api …                            busy; nothing to say yet
+ 2 api ⚡ ✓ add tests for … 14m      unread 14 minutes, and it never asks
+ 3 mobile-app ◇ ! wire up the 1S… 1h  plan mode, blocked on you for an hour
+```
+
+The age is time in the *current* state, not since the last report — `PostToolUse`
+fires continuously while Claude works, so resetting the clock on each one would pin
+every agent at `0s` and hide exactly the one that's been stuck.
+
+**Too many agents to fit.** A statusline can't scroll — it's one string rendered into
+a fixed row, with no viewport to offset and no wheel events reaching it. So the board
+*windows*: it measures its pills against the columns actually available and renders
+only the slice that fits, with clickable arrows for the rest.
+
+```
+‹2   3 api …    4 api ⚡ ✓ fix auth 6m    5 web …   2›
+```
+
+Click an arrow to page one agent that way. The window also **follows focus**, so the
+agent `<leader>as` targets is never the one you can't see.
+
+How many fit is **measured, not assumed** — a wider monitor shows more agents and
+hides fewer, and space is only reserved for a neighbour that's actually rendering.
+Outside a repo there's no branch segment to pay for; with a clean buffer there's no
+churn readout; either way the board just gets the columns. With nine agents open:
+
+| Width | 80 | 120 | 160 | 220 |
+| --- | --- | --- | --- | --- |
+| Shown, no repo | 3 | 5 | 7 | 9 |
+| Shown, long branch + `+12 ~3` | 1 | 3 | 5 | 9 |
+
+The only estimate left is the mode block, sized to the longest mode name rather than
+the current one — a board that's occasionally two columns shy beats one that reflows
+every time you press `i`.
+
+The board draws from a cache refreshed asynchronously (`list_panes_async`), not from
+a live `tmux` query. Enumerating panes forks two subprocesses — right for a send,
+where a stale list means a message typed into the wrong agent, and wrong on a redraw
+path Neovim walks on every keystroke. That cost ~4ms of blocking fork per render and
+was what made clicking an arrow feel laggy; the click was instant, the repaint wasn't.
+
+The arrow colour carries the reason you'd look: it takes the accent of the nearest
+hidden agent, but turns **red** if any hidden agent is `!` or `✓`. An agent blocked on
+you must never go invisible just because it scrolled off — that's the one way this
+could be worse than the overflowing bar it replaces.
+
+**Picker rows** (`<leader>af`) get a label from the same source, chosen by state:
+while an agent is working or blocked it shows what you asked it (`› add tests`);
+once it's done it shows what it answered (`‹ Added verifyWebhook() plus 4 tests`).
+The question changes with the state — "what is this one for" while it runs, "is this
+worth switching to" once it's finished — and the marker says which you're reading.
+An agent that reports nothing falls back to the scraped pane line, as before.
+
+This is **reported, not guessed**. Earlier versions had no status at all, for a good
+reason: Neovim can't see inside a Claude process, and inferring "working" from the
+rendered pane was guesswork that went blind under bypass-permissions. Claude's own
+[hooks](https://code.claude.com/docs/en/hooks) fire on the real events instead, so
+`…` means it actually ran a tool and `!` means it actually raised a prompt.
+
+**How the wiring works.** Hooks inherit Claude's environment, which includes
+`$TMUX_PANE` — the very pane id this workspace already uses as an agent's identity.
+So each Claude can name itself with no session-id mapping and no handshake:
+
+```
+claude/agent-status.sh        hook -> $XDG_RUNTIME_DIR/nvim-claude-agents/<pane>
+claude/hooks.settings.json    which event means which state
+util/claude_agent_status.lua  fs_event on that directory -> repaint
+```
+
+The record is `key=value` lines — the richest format a POSIX shell can write without
+a JSON dependency on every hook call:
+
+```
+status=done          since=1788387707
+mode=bypassPermissions    task=add tests for the relayer webhook path
+```
+
+Only `UserPromptSubmit` pays for a `jq` parse, because the prompt text and the
+permission mode are the two things no argument can carry; every other event passes
+its state as an argument and carries the rest forward.
+
+One file per pane, because N Claude processes have no way to coordinate a shared
+one; tmpfs, because these are claims about processes alive *right now* and shouldn't
+survive a reboot. A pane whose Claude was `SIGKILL`ed leaves an orphan file, which is
+never read (lookups are keyed by panes tmux still lists) and is swept at startup.
+
+**Scope.** The hooks are attached with `claude --settings`, so they apply to the
+Claudes *this workspace* starts and nothing else — `~/.claude/settings.json` is
+untouched and a Claude you run by hand anywhere else is unaffected (it reports
+nothing, and shows no glyph). To make it global instead, merge the `hooks` block
+from `claude/hooks.settings.json` into `~/.claude/settings.json` and drop the
+`--settings` flag from `cmd` in `util/claude_agents.lua`.
+
+> **Note:** `!` relies on Claude actually raising a permission prompt. Under
+> `--dangerously-skip-permissions` it never does, so that glyph stays quiet — `✓`
+> and `…` are the signals that still carry in bypass mode.
 
 ### MCP review session (`<leader>aI…`)
 

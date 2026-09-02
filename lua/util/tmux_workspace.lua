@@ -904,31 +904,15 @@ function M.new(config)
     refresh_indicator()
   end
 
-  ---Every pane in this workspace, in window/pane order. The Claude workspace
-  ---uses this to enumerate agents; the terminal workspace doesn't need it.
-  ---@return { pane: string, window: integer, active: boolean, group_active: boolean, cwd: string }[]
-  function W.list_panes()
-    local target = my_session()
-    if not session_alive(target) then
-      return {}
-    end
-    local out = vim.fn.systemlist({
-      "tmux",
-      "list-panes",
-      "-s",
-      "-t",
-      target,
-      "-F",
-      -- window_active matters as much as pane_active: pane_active is set on
-      -- ONE pane per window, so every window has an "active" pane. Reading
-      -- only that flag makes several panes look focused at once.
-      "#{pane_id}\t#{window_index}\t#{pane_active}\t#{window_active}\t#{pane_current_path}",
-    })
-    if vim.v.shell_error ~= 0 then
-      return {}
-    end
+  -- The format both listing paths ask for. window_active matters as much as
+  -- pane_active: pane_active is set on ONE pane per window, so every window has
+  -- an "active" pane. Reading only that flag makes several panes look focused
+  -- at once.
+  local PANE_FORMAT = "#{pane_id}\t#{window_index}\t#{pane_active}\t#{window_active}\t#{pane_current_path}"
+
+  local function parse_panes(lines)
     local panes = {}
-    for _, line in ipairs(out) do
+    for _, line in ipairs(lines) do
       local id, win, pactive, wactive, path = line:match("^(%S+)\t(%d+)\t(%d)\t(%d)\t(.*)$")
       if id then
         panes[#panes + 1] = {
@@ -941,6 +925,39 @@ function M.new(config)
       end
     end
     return panes
+  end
+
+  ---Every pane in this workspace, in window/pane order. The Claude workspace
+  ---uses this to enumerate agents; the terminal workspace doesn't need it.
+  ---
+  ---Blocking, and deliberately so: this is what `<leader>as` resolves its target
+  ---with, and a send delivered to a stale pane list is a message typed into the
+  ---wrong agent. Anything drawn on a redraw path wants list_panes_async instead.
+  ---@return { pane: string, window: integer, active: boolean, group_active: boolean, cwd: string }[]
+  function W.list_panes()
+    local target = my_session()
+    if not session_alive(target) then
+      return {}
+    end
+    local out = vim.fn.systemlist({ "tmux", "list-panes", "-s", "-t", target, "-F", PANE_FORMAT })
+    if vim.v.shell_error ~= 0 then
+      return {}
+    end
+    return parse_panes(out)
+  end
+
+  ---The same list, without blocking, and without the separate has-session probe
+  ---(list-panes already fails on a session that isn't there -- halving the forks
+  ---is the point of this path existing).
+  ---
+  ---`cb` receives the pane list, or nil if the session is gone. It runs on the
+  ---main loop, so it may touch the API freely.
+  function W.list_panes_async(cb)
+    vim.system({ "tmux", "list-panes", "-s", "-t", my_session(), "-F", PANE_FORMAT }, { text = true }, function(res)
+      vim.schedule(function()
+        cb(res.code == 0 and parse_panes(vim.split(res.stdout or "", "\n", { trimempty = true })) or nil)
+      end)
+    end)
   end
 
   ---Is the process behind a "-w<pid>" view session still running? Read from
