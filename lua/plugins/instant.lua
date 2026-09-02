@@ -213,7 +213,10 @@ vim.defer_fn(function()
     attempts = attempts + 1
     local buf = find_synced_buf(file, sender_cwd)
     if buf then
-      vim.api.nvim_win_set_buf(0, buf)
+      -- display_buf, not nvim_win_set_buf: the latter leaves this window's
+      -- previous (empty, unnamed, startup) buffer loaded and listed, which
+      -- is one of the stray [No Name] entries the mirror used to show.
+      require('util.shared_tabs').display_buf(0, buf)
       vim.notify('instant.nvim: focused ' .. vim.api.nvim_buf_get_name(buf), vim.log.levels.INFO)
       return
     end
@@ -293,6 +296,21 @@ local function host_session()
   -- to whatever session this window is already in.
   if vim.g.instant_root_port then
     print("Root session is on port " .. vim.g.instant_root_port .. " -- opening another mirror of it")
+    -- Re-snapshot the tab layout as it is RIGHT NOW, before the new mirror
+    -- can read it. The snapshot used to be written exactly once, when the
+    -- session first started hosting, so every later mirror bootstrapped
+    -- from a picture of the past: tabs that have since been closed, and --
+    -- the damaging part -- files that are no longer open anywhere.
+    -- instant.nvim only shares buffers that are CURRENTLY open, so a
+    -- snapshot entry naming a closed file can never be resolved and the
+    -- mirror waits out the full 30s poll timeout on it. That is the
+    -- reported "the second <leader>iss is much slower than the first" plus
+    -- its "gave up waiting for ..." warning. Writing a fresh snapshot here
+    -- costs nothing and means each mirror mirrors what you actually have
+    -- open. (shared_tabs.lua's bootstrap no longer serialises on these
+    -- lookups either, so a stale entry that does slip through now costs
+    -- only its own tab.)
+    require("util.shared_tabs").write_snapshot(vim.g.instant_root_port)
     spawn_mirror_window(vim.g.instant_root_port, file, cwd)
     return
   end
@@ -385,7 +403,9 @@ end
 local function poll_and_focus(file, sender_cwd, attempts_left)
   local buf = find_synced_buf(file, sender_cwd)
   if buf then
-    vim.api.nvim_win_set_buf(0, buf)
+    -- See the generated script above: display_buf disposes of the empty
+    -- unnamed buffer it replaces instead of orphaning it as a [No Name].
+    require("util.shared_tabs").display_buf(0, buf)
     return
   end
   if attempts_left > 0 then

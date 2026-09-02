@@ -155,6 +155,44 @@ local function find_file_window_in_tabpage(tabpage)
   return vim.api.nvim_tabpage_get_win(tabpage)
 end
 
+---Puts `buf` in `win` and cleans up the buffer it displaced if that buffer
+---was a throwaway empty one.
+---
+---This exists because `:tabnew` (below, and in apply_event) creates a fresh
+---empty UNNAMED buffer for the tab it opens, and nvim_win_set_buf then
+---swaps the window onto the synced buffer WITHOUT disposing of it -- unlike
+---`:edit`, which wipes an empty/unnamed/unmodified current buffer as it
+---reuses it. The orphan stays loaded and 'buflisted', so bufferline shows a
+---[No Name] entry for every tab this bootstrap created, plus one for the
+---mirror's own startup buffer. Confirmed directly: a mirror whose snapshot
+---had 4 tabs came up with exactly 3 stray [No Name] buffers, while the host
+---(which only ever opens files via :edit) had none -- exactly the reported
+---"[No Name] tabs in the mirror, nothing like it on the root session".
+---
+---Only genuinely disposable buffers are wiped: unnamed, unmodified, empty,
+---and not on screen in any other window.
+local function display_buf(win, buf)
+  local old = vim.api.nvim_win_get_buf(win)
+  if not pcall(vim.api.nvim_win_set_buf, win, buf) then
+    return
+  end
+  if old == buf or not vim.api.nvim_buf_is_valid(old) then
+    return
+  end
+  if vim.api.nvim_buf_get_name(old) ~= "" or vim.bo[old].modified then
+    return
+  end
+  local lines = vim.api.nvim_buf_get_lines(old, 0, -1, false)
+  if #lines > 1 or (lines[1] or "") ~= "" then
+    return
+  end
+  if #vim.fn.win_findbuf(old) > 0 then
+    return -- still visible somewhere else; leave it alone
+  end
+  pcall(vim.api.nvim_buf_delete, old, { force = false })
+end
+M.display_buf = display_buf
+
 ---Captures every tab's current file (or nil for a blank/special one) into
 ---a per-port snapshot file. Exposed (not local) because instant.lua calls
 ---this directly at the exact moment a session starts hosting -- see the
@@ -268,6 +306,26 @@ local function broadcast_tabclosed(args)
   bump_last_seen(port)
 end
 
+-- tab number -> a counter bumped every time something new is queued for
+-- that tab. Buffer lookups run concurrently now (see bootstrap_from_snapshot
+-- and apply_event), so two of them can be in flight for the same tab at
+-- once -- e.g. the snapshot's file for tab 3 and, moments later, a replayed
+-- event moving tab 3 to a different file. Without a claim, whichever poll
+-- happened to resolve LAST would win, which is the wrong answer whenever
+-- that's the older one (the stale file would visibly overwrite the newer
+-- one, at random). Each queued lookup takes the current token and only
+-- applies its result if it is still the latest claim on that tab.
+local tab_claims = {}
+
+local function claim_tab(tab)
+  tab_claims[tab] = (tab_claims[tab] or 0) + 1
+  return tab_claims[tab]
+end
+
+local function tab_claim_current(tab, token)
+  return tab_claims[tab] == token
+end
+
 -- Poll until the buffer instant.nvim created for `file` shows up, then hand
 -- its bufnr to `apply` (or nil if it never did). Polling rather than a fixed
 -- delay because a synced buffer arrives whenever the network and the peer's
@@ -300,16 +358,31 @@ local function preserving_current_tab(fn)
   pcall(vim.cmd, original .. "tabnext")
 end
 
--- Applies a snapshot taken with M.write_snapshot: creates each tab (if
--- needed) and fills its window with the recorded file, one tab at a time
--- (waiting for each file's content to actually be synced -- via
--- instant.nvim's own mechanism, separately -- before moving to the next),
--- all WITHOUT changing which tab is currently active, other than landing
--- wherever bootstrap naturally leaves off since this runs once at join
--- time before you've navigated anywhere yourself. Only covers what
--- predates the event system (see the comment above broadcast_tabnew) --
--- `on_done` is what lets the caller chain the FULL event-log replay after
--- this finishes, to pick up everything since.
+-- Applies a snapshot taken with M.write_snapshot: creates every tab it
+-- records, then fills each one's window with the recorded file as that
+-- file's content actually arrives (via instant.nvim's own sync, separately
+-- and on its own schedule), all WITHOUT changing which tab is currently
+-- active beyond landing on the host's. Only covers what predates the event
+-- system (see the comment above broadcast_tabnew) -- `on_done` is what lets
+-- the caller chain the FULL event-log replay after this, to pick up
+-- everything since.
+--
+-- The tab STRUCTURE is built synchronously, up front, and the per-tab file
+-- lookups then run CONCURRENTLY. An earlier version instead walked the
+-- snapshot one tab at a time, creating tab i+1 only after tab i's file had
+-- been found -- which made a single unresolvable entry stall everything
+-- behind it for the full 30s poll timeout. That was the direct cause of the
+-- "the second <leader>iss is far slower than the first, and warns that it
+-- gave up waiting": the snapshot is written once, when hosting starts, so
+-- by the time you spawn a second mirror it can easily name a file the host
+-- has since closed -- and instant.nvim only ever shares buffers that are
+-- CURRENTLY open, so such an entry can never resolve, no matter how long
+-- you wait. Reproduced directly: a host with a 3-tab snapshot that then
+-- closed tab 1's file left a joining mirror sitting at 1 tab for a full 30s,
+-- 2 tabs at 35s, and still not finished at 95s. Concurrent lookups make one
+-- dead entry cost that tab alone -- it just stays blank -- instead of
+-- costing every tab after it 30s each. (instant.lua now also re-writes the
+-- snapshot on every mirror spawn, so dead entries are rare to begin with.)
 local function bootstrap_from_snapshot(port, on_done)
   local snap = read_snapshot(port)
   if not snap or #snap == 0 then
@@ -318,61 +391,56 @@ local function bootstrap_from_snapshot(port, on_done)
     end
     return
   end
+
+  -- `replaying` only needs to cover the SYNCHRONOUS :tabnew calls (they
+  -- fire TabNew, which broadcast_tabnew hooks -- has to be suppressed to
+  -- avoid re-broadcasting our own replay). display_buf below does NOT
+  -- trigger BufNewFile/BufReadPost (no disk read happens, it's just
+  -- switching which already-loaded buffer a window shows) -- so it doesn't
+  -- need guarding, and holding `replaying` across the ASYNC poll waits was
+  -- purely harmful: it silently suppressed any of YOUR OWN genuine actions
+  -- (opening a file, creating a tab) for as long as that window stayed
+  -- open, causing exactly the "sometimes a window doesn't get synced"
+  -- flakiness this fixes.
+  replaying = true
+  while vim.fn.tabpagenr("$") < #snap do
+    if not pcall(vim.cmd, "tabnew") then
+      break
+    end
+  end
+  replaying = false
+
   -- Land on the tab the HOST was on (see M.write_snapshot for why tab
   -- numbers have to line up). Without this, whichever tab `tabnew` created
   -- last is where this window stays -- always the highest-numbered one,
-  -- which is the host's tab only by coincidence. Done once bootstrap is
-  -- finished rather than up front, since do_tab's own `tabnew` calls move
-  -- the current tab as a side effect and would undo it.
-  local function land_on_host_tab()
-    for i, entry in ipairs(snap) do
-      if entry.current and vim.fn.tabpagenr("$") >= i then
-        pcall(vim.cmd, i .. "tabnext")
-        return
-      end
+  -- which is the host's tab only by coincidence.
+  for i, entry in ipairs(snap) do
+    if entry.current and vim.fn.tabpagenr("$") >= i then
+      pcall(vim.cmd, i .. "tabnext")
+      break
     end
   end
 
-  local function do_tab(i)
-    if i > #snap then
-      land_on_host_tab()
-      if on_done then
-        on_done()
-      end
-      return
+  local tabpages = vim.api.nvim_list_tabpages()
+  for i, entry in ipairs(snap) do
+    if entry.file and tabpages[i] then
+      local win = find_file_window_in_tabpage(tabpages[i])
+      local token = claim_tab(i)
+      poll_for_buffer(entry.file, entry.cwd, 150, function(buf)
+        if buf and tab_claim_current(i, token) and vim.api.nvim_win_is_valid(win) then
+          display_buf(win, buf)
+        end
+      end)
     end
-    -- `replaying` only needs to cover the SYNCHRONOUS :tabnew call (it
-    -- fires TabNew, which broadcast_tabnew hooks -- has to be suppressed
-    -- to avoid re-broadcasting our own replay). nvim_win_set_buf below
-    -- does NOT trigger BufNewFile/BufReadPost (no disk read happens, it's
-    -- just switching which already-loaded buffer a window shows) -- so it
-    -- doesn't need guarding, and holding `replaying` across the ASYNC
-    -- poll_for_buffer wait (up to 30s per tab, compounding across however
-    -- many tabs are in the snapshot) was purely harmful: it silently
-    -- suppressed any of YOUR OWN genuine actions (opening a file,
-    -- creating a tab) for as long as that window stayed open, causing
-    -- exactly the "sometimes a window doesn't get synced" flakiness this
-    -- fixes.
-    if vim.fn.tabpagenr("$") < i then
-      replaying = true
-      pcall(vim.cmd, "tabnew")
-      replaying = false
-    end
-    local tabpages = vim.api.nvim_list_tabpages()
-    local win = find_file_window_in_tabpage(tabpages[i])
-    local file = snap[i].file
-    if not file then
-      do_tab(i + 1)
-      return
-    end
-    poll_for_buffer(file, snap[i].cwd, 150, function(buf)
-      if buf then
-        pcall(vim.api.nvim_win_set_buf, win, buf)
-      end
-      do_tab(i + 1)
-    end)
   end
-  do_tab(1)
+
+  -- The structure is in place and every lookup is in flight; the event-log
+  -- replay chained here is free to start now rather than waiting on files
+  -- that may never arrive. Its own events are applied on top, and the
+  -- per-tab claim tokens make the later one win if both target a tab.
+  if on_done then
+    on_done()
+  end
 end
 
 ---`on_done` (optional) is what lets a caller that needs events applied
@@ -412,17 +480,27 @@ local function apply_event(event, on_done)
     end
     local tabpages = vim.api.nvim_list_tabpages()
     local win = find_file_window_in_tabpage(tabpages[event.tab])
-    -- No `replaying` guard needed here -- nvim_win_set_buf doesn't trigger
+    -- No `replaying` guard needed here -- display_buf doesn't trigger
     -- BufNewFile/BufReadPost (see bootstrap_from_snapshot's comment above
     -- for why holding it across this async wait was actively harmful).
+    --
+    -- on_done fires IMMEDIATELY, not when the buffer turns up. Only the tab
+    -- STRUCTURE (new/closed) has to be applied in strict order -- that's
+    -- what tab numbers are relative to -- and this event doesn't touch it.
+    -- Waiting here instead put a 30s timeout in front of every remaining
+    -- event in the queue whenever one file couldn't be resolved (a file the
+    -- sharer has since closed can never resolve at all), which is what made
+    -- catching up on a long-running session crawl. The claim token keeps
+    -- the concurrent lookups from overwriting each other out of order.
+    local token = claim_tab(event.tab)
     poll_for_buffer(event.file, event.cwd, 150, function(buf)
-      if buf then
-        pcall(vim.api.nvim_win_set_buf, win, buf)
-      end
-      if on_done then
-        on_done()
+      if buf and tab_claim_current(event.tab, token) and vim.api.nvim_win_is_valid(win) then
+        display_buf(win, buf)
       end
     end)
+    if on_done then
+      on_done()
+    end
   elseif event.kind == "closed" then
     -- Out of range (already closed some other way, or never had that many
     -- tabs) or the only tab left (Neovim refuses to close the last one) --
