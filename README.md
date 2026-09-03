@@ -360,6 +360,20 @@ claude/hooks.settings.json    which event means which state
 util/claude_agent_status.lua  fs_event on that directory -> repaint
 ```
 
+`hooks.settings.json` maps Claude's events onto the five states the pill can show.
+`parse` is the `jq` step, and only two events pay for it:
+
+| Claude event | Args | Resulting state |
+| --- | --- | --- |
+| `SessionStart` | `idle` | *(no glyph)* |
+| `UserPromptSubmit` | `working parse` | `…` — plus the task text and permission mode |
+| `PostToolUse` | `working` | `…` |
+| `Notification` (`permission_prompt\|elicitation_dialog\|agent_needs_input`) | `waiting` | `!` |
+| `Notification` (`idle_prompt`) | `idle` | *(no glyph)* |
+| `Stop` | `done parse` | `✓` — plus the answer summary |
+| `SessionEnd` | `gone` | pill disappears |
+
+
 The record is `key=value` lines — the richest format a POSIX shell can write without
 a JSON dependency on every hook call:
 
@@ -383,6 +397,14 @@ untouched and a Claude you run by hand anywhere else is unaffected (it reports
 nothing, and shows no glyph). To make it global instead, merge the `hooks` block
 from `claude/hooks.settings.json` into `~/.claude/settings.json` and drop the
 `--settings` flag from `cmd` in `util/claude_agents.lua`.
+
+> **Porting this to your machine:** `claude/hooks.settings.json` stores the hook
+> command as an **absolute path** (`/home/cstralpt/.config/nvim/claude/agent-status.sh`)
+> — Claude runs hooks without a shell, so `~` and `$HOME` are not expanded and a
+> relative path would resolve against whatever cwd Claude happened to start in.
+> Every `command` in that file has to be rewritten for your own home directory, and
+> `agent-status.sh` has to stay executable (`chmod +x`), or the hooks fail silently
+> and every agent shows no glyph at all.
 
 > **Note:** `!` relies on Claude actually raising a permission prompt. Under
 > `--dangerously-skip-permissions` it never does, so that glyph stays quiet — `✓`
@@ -414,3 +436,213 @@ Requires `tmux` (`sudo pacman -S tmux` or `paru -S tmux`) for terminal mirroring
 | `<leader>iss` | Start (or extend) a mirrored session — opens a second window automatically |
 | `<leader>isj` | Join a session by port, if the auto-mirror didn't reach a window |
 | `<leader>isS` | Stop mirroring for this window |
+
+Both `<leader>iss` and the desktop keybind below open that second window through a
+terminal emulator, so which one gets used is a shared concern — see next section.
+
+## 🖥️ Terminal integration (foot, zero padding)
+
+This config is written against [foot](https://codeberg.org/dnkl/foot) on Wayland, and
+opens editor windows with **no padding**, so the buffer meets the window edge instead
+of floating inside a 25px frame.
+
+Padding is set per-instance rather than in `foot.ini`, so only editor windows are
+affected and your ordinary shells keep their normal padding:
+
+```sh
+foot -o "main.pad=0x0 center" nvim
+```
+
+The `center` keyword matters. A terminal grid is a whole number of cells, so unless
+the window height happens to be an exact multiple of the cell height there are
+leftover pixels, and foot's default is to dump **all** of them on the right and
+bottom edges — a visible strip of wallpaper under the statusline. `center` splits the
+remainder evenly instead. It cannot be driven to zero (negative padding isn't a
+thing — `pad` is unsigned); an even 8px top and bottom simply reads as intentional
+where 16px only at the bottom reads as a misaligned window.
+
+Those flags live in **one** place, `~/.local/bin/nvim-foot`, so the keybind and the
+shell wrappers can't drift apart when you retune the padding:
+
+```sh
+#!/bin/sh
+exec foot -o "main.pad=0x0 center" nvim "$@"
+```
+
+Three things point at it:
+
+| Entry point | Where it lives | Notes |
+| --- | --- | --- |
+| `Super+C` | `$editor` in `~/.config/caelestia/hypr-vars.conf` | Absolute path — Hyprland's `PATH` doesn't necessarily include `~/.local/bin` |
+| `<leader>iss` mirror | `lua/plugins/instant.lua` | Same flags, plus `-D` for the working directory |
+| `nvim` / `nv` | `~/.config/fish/functions/` | Detached window; falls through to the real binary when not interactive |
+
+### The `nvim` and `nv` wrappers
+
+`nvim` opens a new zero-padding foot window rather than taking over the terminal you
+typed it in, so the editor always gets the window it was tuned for. `nv` is the same
+thing under a shorter name (`--wraps nvim`, so nvim's own completions still work).
+
+It is deliberately **not** an unconditional override:
+
+```fish
+if set -q NVIM; or not isatty stdin; or not isatty stdout
+    command nvim $argv
+    return $status
+end
+setsid -f nvim-foot $argv >/dev/null 2>&1
+```
+
+That guard is load-bearing, not defensive padding. Without it, anything invoking
+`nvim` as `$EDITOR` — `git commit`, `git rebase -i`, `crontab -e` — would get a
+*detached* window and an instant exit, so git would see an unmodified message and
+abort the commit. Pipes (`… | nvim -`) and nested nvim terminals (`$NVIM` set) fall
+through to the real binary for the same reason. There's a matching fallback for a
+machine with no foot installed, so the command degrades to plain nvim instead of
+silently doing nothing.
+
+Arguments pass through verbatim, so `nvim .`, `nvim file`, and `nvim +42 file` all
+behave normally; foot inherits the current directory, so `.` resolves where you ran it.
+
+These are **fish** functions — if your interactive shell is bash or zsh they don't
+apply; see the setup prompt below.
+
+> **Why a new window and not the current one?** Padding is fixed when a window is
+> created: foot has no control sequence for `pad` (`foot-ctlseqs(7)` has nothing for
+> it) and no config-reload signal (`SIGUSR1`/`SIGUSR2` only switch colour themes), and
+> the padding is space drawn *outside* the grid the application ever sees. So an
+> already-running terminal cannot be made zero-padding after the fact by any means —
+> a fresh window is the only way to get one. The alternative is putting
+> `pad=0x0 center` in `foot.ini` globally, which also strips padding from every
+> ordinary shell.
+
+### Terminal fallback
+
+`<leader>iss` prefers foot (with the padding above) but isn't foot-only: it walks a
+list and takes the first terminal actually installed, so the mirror still opens on a
+machine without foot.
+
+| Order | Terminal | Working-directory flag |
+| --- | --- | --- |
+| 1 | `foot` | `-D <cwd>` |
+| 2 | `ghostty` | `--working-directory=<cwd> -e` |
+| 3 | `kitty` | `--directory <cwd>` |
+| 4 | `alacritty` | `--working-directory <cwd> -e` |
+| 5 | `wezterm` | `start --cwd <cwd>` |
+| 6 | `konsole` | `--workdir <cwd> -e` |
+| 7 | `gnome-terminal` | `--working-directory=<cwd> --` |
+| 8 | `xfce4-terminal` | `--working-directory=<cwd> -x` |
+| 9 | `x-terminal-emulator` | *(none — Debian's generic alternative)* |
+| 10 | `xterm` | *(none)* |
+
+Each entry carries its own directory flag because that directory is **load-bearing,
+not cosmetic**: the generated join script never `:cd`s, so the mirror resolves the
+synced buffer name against whatever cwd it starts in (`util/instant_bufname.lua`). A
+mirror that lands in `$HOME` instead of the project silently fails to find the file
+and times out after 30 seconds. Passing the job a cwd is not sufficient on its own —
+foot resets it during child-shell startup — which is why the last two entries, which
+have no such flag, are a genuine last resort rather than equals of the ones above.
+
+If none of the ten is installed, the session is still hosted and says so: join it
+from another nvim with `<leader>isj`.
+
+## 🚀 Setting this up on your own machine
+
+Much of the above is wired to **one specific setup** — Arch + Hyprland + foot + fish,
+with absolute paths baked into the Claude hooks. **None of that is required.** foot is
+simply what the author uses; any terminal works, and the setup prompt below is written
+to adapt to whichever one you already like rather than to talk you into a new one.
+
+Only two things are genuinely required: `nvim` itself, and `tmux` if you want terminal
+mirroring. Everything else — the compositor keybind, the zero-padding windows, even
+which shell you use — bends to your setup.
+
+**Run this on a frontier model — [Claude Opus 5](https://claude.com/product/claude-code)
+or equivalent.** It's a multi-step job across your shell, compositor, package manager,
+and a Neovim config it has to read before changing: rewriting absolute paths in the
+hook config, picking the right per-instance flag for *your* terminal, and getting the
+in-place-vs-spawn branch right. Smaller models tend to guess a plausible-looking flag
+and leave you with a half-working setup that fails quietly.
+
+<details>
+<summary>Setup prompt for Claude Code (click to expand)</summary>
+
+```text
+I've just cloned this Neovim config to ~/.config/nvim and I want it fully working on
+my machine. Please set it up, adapting anything that was hardcoded to the original
+author's environment. Work through it in this order and tell me what you changed.
+
+IMPORTANT: this config was written on Arch + Hyprland + the foot terminal + fish, but
+none of that is a requirement and I do NOT want to be switched to any of it. Use the
+terminal, shell, and compositor I ALREADY have. Wherever the config names foot, treat
+that as "the author's terminal" and substitute mine. Never install a new terminal
+emulator or change my default shell -- if a feature genuinely cannot work with what I
+have, say so plainly and skip it rather than migrating me.
+
+1. Survey my environment first, and report it back before changing anything:
+   - OS/distro and package manager
+   - Login shell AND my interactive shell (they may differ)
+   - Wayland or X11, and which compositor/DE
+   - Which terminal emulators are installed, and ASK ME which one I want used
+     for editor windows if there is more than one
+   - Whether nvim, tmux, jq, git, ripgrep and a C compiler are present
+
+2. Install the missing hard dependencies with my package manager, asking me first.
+   Only tmux (terminal mirroring) and jq (the Claude status hooks) are actually
+   required. Do not install a terminal emulator.
+
+3. Fix the Claude Code hooks in claude/hooks.settings.json. Every "command" is an
+   ABSOLUTE path to the original author's home directory. Claude runs hooks without
+   a shell, so ~ and $HOME are NOT expanded and a relative path resolves against an
+   unpredictable cwd. Rewrite each one for my home directory and make sure
+   claude/agent-status.sh is executable. Verify by running the script by hand with
+   a fake $TMUX_PANE and showing me the file it writes.
+
+4. Set up editor windows for MY chosen terminal. This whole step is optional polish
+   -- if my terminal can't do part of it, skip that part and tell me, don't work
+   around it by installing something else.
+   - Create a launcher script at ~/.local/bin/nvim-<myterminal> that opens nvim in
+     one new window of my terminal and passes "$@" through. The author's foot
+     version is exec foot -o "main.pad=0x0 center" nvim "$@".
+   - Zero padding is a nice-to-have, not the point. If my terminal has a
+     per-instance config-override flag, use it so ONLY editor windows lose their
+     padding; never edit my global terminal config to achieve it. Check my
+     terminal's own --help/man page for the real flag rather than guessing -- as a
+     starting point, kitty uses -o window_padding_width=0, alacritty uses
+     -o window.padding.x=0 -o window.padding.y=0, ghostty uses --window-padding-x=0,
+     and wezterm uses --config window_padding=.... Profile-based terminals like
+     konsole and gnome-terminal have no per-instance flag at all: in that case just
+     skip the padding and say so.
+   - Add `nvim` and `nv` wrappers for MY interactive shell (not fish, unless fish
+     is what I actually use). They should open a new window via that launcher.
+     Keep a guard that falls through to the REAL nvim binary when stdin or stdout
+     is not a TTY, when $NVIM is set, or when the terminal isn't installed -- the
+     not-a-TTY case is what keeps `git commit` working, since a detached window
+     exits instantly and git then aborts on the unmodified message.
+   - If I use a tiling WM/compositor, offer a keybind (the author's is Super+C)
+     using an absolute path to the launcher, since a WM's PATH usually lacks
+     ~/.local/bin. Show me the line and let me confirm before editing any WM config.
+     If I'm on a normal desktop environment, skip this and tell me.
+
+5. Reorder the <leader>iss terminal fallback list in lua/plugins/instant.lua so MY
+   terminal is FIRST -- it currently leads with foot. If my terminal isn't on the
+   list at all, add it with the correct working-directory flag, verified from its
+   own docs. That flag is load-bearing: the mirror resolves the synced buffer name
+   against its own cwd, so without it the mirror opens in the wrong directory and
+   times out after 30s instead of syncing.
+
+6. Verify, and show me the actual output rather than asserting it works:
+   - `nvim --headless "+checkhealth" +qa` for errors
+   - the terminal-selection logic picks MY terminal, not foot
+   - the `nvim` wrapper opens a new window interactively, and still falls through
+     to the real binary when not on a TTY (test both branches -- and keep stdout a
+     TTY while testing the first one, or it falsely takes the not-a-TTY path)
+   - a real <leader>iss opens a second window that syncs
+   - a Claude agent shows a status glyph in the statusline
+
+Don't change my keybindings, colorscheme, or plugin list beyond what's needed to make
+these features work. If something can't work on my setup, say so directly instead of
+leaving a broken half-configuration.
+```
+
+</details>

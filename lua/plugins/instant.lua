@@ -268,7 +268,58 @@ end, 300)
   -- setting it explicitly, which is why both that AND jobstart's `cwd` are
   -- set below -- belt and suspenders, but only -D is actually load-bearing.
   local cwd = vim.fn.getcwd(0)
-  vim.fn.jobstart({ "foot", "-D", cwd, "nvim", "-c", "luafile " .. script_path }, { detach = true, cwd = cwd })
+  local nvim_args = { "nvim", "-c", "luafile " .. script_path }
+
+  -- Terminals to open the mirror in, most preferred first; the first one
+  -- actually installed wins. foot is the normal path -- everything below it
+  -- exists so <leader>iss still works on a machine without foot, rather than
+  -- failing with a bare "foot: executable not found" job error.
+  --
+  -- Every entry sets a working directory explicitly wherever the terminal
+  -- has a flag for it, because each spells that flag (and its "now run this
+  -- command" separator) differently. That directory is load-bearing, not
+  -- cosmetic: the generated join script never :cd's, so the mirror resolves
+  -- the synced buffer name against whatever cwd it happens to start in (see
+  -- util/instant_bufname.lua). A mirror that lands in $HOME instead of the
+  -- project silently fails to find the file and times out after 30s.
+  --
+  -- The last two have no such flag and lean on jobstart's `cwd` alone --
+  -- which per the note above is not reliable, so they are genuinely a
+  -- last resort, not equals of the ones above them.
+  local terminals = {
+    -- Matches the zero-padding windows that Super+C and the fish nvim/nv
+    -- wrappers open. Keep the pad value in sync with ~/.local/bin/nvim-foot.
+    { "foot", { "-o", "main.pad=0x0 center", "-D", cwd } },
+    { "ghostty", { "--working-directory=" .. cwd, "-e" } },
+    { "kitty", { "--directory", cwd } },
+    { "alacritty", { "--working-directory", cwd, "-e" } },
+    { "wezterm", { "start", "--cwd", cwd } },
+    { "konsole", { "--workdir", cwd, "-e" } },
+    { "gnome-terminal", { "--working-directory=" .. cwd, "--" } },
+    { "xfce4-terminal", { "--working-directory=" .. cwd, "-x" } },
+    -- Debian's generic alternative, then the one X terminal that is
+    -- essentially always present. Both take -e and neither takes a cwd.
+    { "x-terminal-emulator", { "-e" } },
+    { "xterm", { "-e" } },
+  }
+
+  for _, term in ipairs(terminals) do
+    if vim.fn.executable(term[1]) == 1 then
+      local argv = { term[1] }
+      vim.list_extend(argv, term[2])
+      vim.list_extend(argv, nvim_args)
+      vim.fn.jobstart(argv, { detach = true, cwd = cwd })
+      return
+    end
+  end
+
+  vim.notify(
+    "instant.nvim: no supported terminal found to open the mirror window."
+      .. " The session IS hosted on port "
+      .. port
+      .. " -- join it manually from another nvim with <leader>isj.",
+    vim.log.levels.ERROR
+  )
 end
 
 -- Whether THIS nvim process is currently running a server -- tracked
