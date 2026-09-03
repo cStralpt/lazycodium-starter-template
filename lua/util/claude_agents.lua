@@ -57,7 +57,7 @@ local ws = require("util.tmux_workspace").new({
   -- tmux window on this machine, including the <C-/> terminal's, run claude.
   -- Each window and pane gets `claude` passed explicitly instead.
   set_global_shell = false,
-  float = { width = 0.9, height = 0.9 },
+  float = { width = 0.97, height = 0.95 },
   missing_msg = "No Claude workspace yet (<leader>ac to start one)",
   -- One screen at a time. Every Neovim on this box shares ONE workspace, so a
   -- <leader>as from this window would otherwise pop open a second view of the
