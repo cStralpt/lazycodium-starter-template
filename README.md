@@ -224,23 +224,6 @@ the next send lands never needed the float on screen. These three never open it.
 | `N<leader>af` | Focus agent N directly — no picker, no float (`3<leader>af`) |
 | *click a statusline pill* | Focus that agent |
 
-Bare `<leader>af` still opens the picker and lands you in front of what you chose —
-browsing what each agent is holding is the one case where you did mean to look.
-
-**One screen at a time.** Every Neovim on the machine shares one workspace, so a
-`<leader>as` from the window next door used to pop open a *second* view of the agents
-you were already looking at — the same panes twice, both shrunk to the smaller tmux
-client. Now the implicit reveals check first: if another Neovim window already has the
-workspace on screen, the send still lands and focus still moves, but this window stays
-out of the way and says so. `<leader>ac` is exempt — that one is you explicitly asking
-for the workspace *here*.
-
-Visibility can't be read from tmux: the `tmux attach` client stays attached while the
-float is merely hidden, so `session_attached` is true long after it left the screen.
-Each window publishes its own state instead, as a global tmux user option keyed by pid
-(`@ClaudeWorkspace-view-<pid>`), reaped on read via `/proc` so a Neovim that was
-`SIGKILL`ed can't lock everyone else out of their own workspace forever.
-
 ### Sending context
 
 Every send takes an optional **count** — `2<leader>as` delivers to agent 2 without
@@ -255,52 +238,6 @@ The number is printed on the statusline pill, so it's read, not memorised.
 | `<leader>mc` | Clear all send-marks in this buffer |
 | `<leader>aM` | Send all marked lines, grouped into contiguous `file:start-end` blocks; marks clear only once the send succeeds |
 | `<leader>ai` | Switch the active agent's model — same picker as `<leader>aIm`, but sends `/model <value>` into its live session instead of opening a new terminal |
-
-Sends go to the **focused** agent, which is simply tmux's active pane — whichever
-one you last touched. Two Neovim windows looking at the same group therefore agree
-on it with nothing to sync.
-
-Reads fall back to the canonical session, so a Neovim that has never opened the float
-still sees every agent — grouped tmux sessions share their windows, so it's the same
-pane list either way. Without that, a freshly started window drew an empty board and
-reported "No Claude agents yet" about agents plainly running next door.
-
-`<leader>ai` reuses `claudecode.nvim`'s own model list (`claudecode.config.defaults.models`)
-so the two pickers never drift apart, but it can't reuse `ClaudeCodeSelectModel` itself —
-that command only knows how to spawn a fresh `ClaudeCode --model <x>` terminal, it has no
-way to retarget a session that's already running. Sending `/model <value>` as text into the
-agent's own pane is the only way to change a live agent's model, which is also why this is
-auto-submitted (Enter included) rather than left in the prompt like every other send — there's
-no text here to review, just a command to run.
-
-### Colour
-
-One agent is one colour everywhere. A group owns an accent — the same one its pill
-carries on the workspace winbar and the statusline — and the tabs inside it are
-shades of that hue, so a row tells you which group it belongs to before you've read
-any text.
-
-### Statusline
-
-Mostly empty, on purpose. The bufferline tab above it already draws the filetype
-icon, filename, modified dot and diagnostic counts for the current buffer, so a
-`root › icon › path › diagnostics` breadcrumb underneath was the same information
-twice — three times for the repo name, which lands on the agent pill as well.
-
-What's left is only what nothing else on screen says:
-
-```
- NORMAL │  main                                    +12 ~3   1 ✓
-   mode    branch                                   churn    agents
-```
-
-`+12 ~3` is the gitsigns diff for the current buffer — how much of what you're
-looking at isn't yours yet. Both right-hand segments render empty when they have
-nothing to report, so a plain editing session gets a clean bar.
-
-Trade-off: bufferline truncates long tab labels and the full name now lives
-nowhere — `:f` still prints it. Everything removed is listed with its reasoning at
-the top of `lua/plugins/lualine.lua`, including how to put each piece back.
 
 ### Agent status
 
@@ -317,122 +254,6 @@ independently rather than decoded from one blob of colour.
 | `◇` | Plan mode — it won't edit anything |
 | `⚡` | Permissions bypassed — it will never stop to ask, so it can never show `!` |
 
-A number alone can't separate two agents working in the same repo, so an agent that
-**wants something from you** also carries what it was asked and how long it's been
-sat there. One that's merely busy doesn't — three agents at full detail would be
-~75 columns and would re-clutter the bar. Width is spent where attention is due, so
-the pill's own size is a signal before you read any text:
-
-```
- 1 api …                            busy; nothing to say yet
- 2 api ⚡ ✓ add tests for … 14m      unread 14 minutes, and it never asks
- 3 mobile-app ◇ ! wire up the 1S… 1h  plan mode, blocked on you for an hour
-```
-
-The age is time in the *current* state, not since the last report — `PostToolUse`
-fires continuously while Claude works, so resetting the clock on each one would pin
-every agent at `0s` and hide exactly the one that's been stuck.
-
-**Too many agents to fit.** A statusline can't scroll — it's one string rendered into
-a fixed row, with no viewport to offset and no wheel events reaching it. So the board
-*windows*: it measures its pills against the columns actually available and renders
-only the slice that fits, with clickable arrows for the rest.
-
-```
-‹2   3 api …    4 api ⚡ ✓ fix auth 6m    5 web …   2›
-```
-
-Click an arrow to page one agent that way, or a **pill** to focus that agent — the
-click only retargets, it never opens the float, so the statusline is a place you can
-aim a send from without a window landing on top of the file you're reading. The board
-also **follows focus**, so the agent `<leader>as` targets is never the one you can't
-see.
-
-How many fit is **measured, not assumed** — a wider monitor shows more agents and
-hides fewer, and space is only reserved for a neighbour that's actually rendering.
-Outside a repo there's no branch segment to pay for; with a clean buffer there's no
-churn readout; either way the board just gets the columns. With nine agents open:
-
-| Width | 80 | 120 | 160 | 220 |
-| --- | --- | --- | --- | --- |
-| Shown, no repo | 3 | 5 | 7 | 9 |
-| Shown, long branch + `+12 ~3` | 1 | 3 | 5 | 9 |
-
-The only estimate left is the mode block, sized to the longest mode name rather than
-the current one — a board that's occasionally two columns shy beats one that reflows
-every time you press `i`.
-
-The board draws from a cache refreshed asynchronously (`list_panes_async`), not from
-a live `tmux` query. Enumerating panes forks two subprocesses — right for a send,
-where a stale list means a message typed into the wrong agent, and wrong on a redraw
-path Neovim walks on every keystroke. That cost ~4ms of blocking fork per render and
-was what made clicking an arrow feel laggy; the click was instant, the repaint wasn't.
-
-The arrow colour carries the reason you'd look: it takes the accent of the nearest
-hidden agent, but turns **red** if any hidden agent is `!` or `✓`. An agent blocked on
-you must never go invisible just because it scrolled off — that's the one way this
-could be worse than the overflowing bar it replaces.
-
-**Picker rows** (`<leader>af`) get a label from the same source, chosen by state:
-while an agent is working or blocked it shows what you asked it (`› add tests`);
-once it's done it shows what it answered (`‹ Added verifyWebhook() plus 4 tests`).
-The question changes with the state — "what is this one for" while it runs, "is this
-worth switching to" once it's finished — and the marker says which you're reading.
-An agent that reports nothing falls back to the scraped pane line, as before.
-
-This is **reported, not guessed**. Earlier versions had no status at all, for a good
-reason: Neovim can't see inside a Claude process, and inferring "working" from the
-rendered pane was guesswork that went blind under bypass-permissions. Claude's own
-[hooks](https://code.claude.com/docs/en/hooks) fire on the real events instead, so
-`…` means it actually ran a tool and `!` means it actually raised a prompt.
-
-**How the wiring works.** Hooks inherit Claude's environment, which includes
-`$TMUX_PANE` — the very pane id this workspace already uses as an agent's identity.
-So each Claude can name itself with no session-id mapping and no handshake:
-
-```
-claude/agent-status.sh        hook -> $XDG_RUNTIME_DIR/nvim-claude-agents/<pane>
-claude/hooks.settings.json    which event means which state
-util/claude_agent_status.lua  fs_event on that directory -> repaint
-```
-
-`hooks.settings.json` maps Claude's events onto the five states the pill can show.
-`parse` is the `jq` step, and only two events pay for it:
-
-| Claude event | Args | Resulting state |
-| --- | --- | --- |
-| `SessionStart` | `idle` | *(no glyph)* |
-| `UserPromptSubmit` | `working parse` | `…` — plus the task text and permission mode |
-| `PostToolUse` | `working` | `…` |
-| `Notification` (`permission_prompt\|elicitation_dialog\|agent_needs_input`) | `waiting` | `!` |
-| `Notification` (`idle_prompt`) | `idle` | *(no glyph)* |
-| `Stop` | `done parse` | `✓` — plus the answer summary |
-| `SessionEnd` | `gone` | pill disappears |
-
-
-The record is `key=value` lines — the richest format a POSIX shell can write without
-a JSON dependency on every hook call:
-
-```
-status=done          since=1788387707
-mode=bypassPermissions    task=add tests for the relayer webhook path
-```
-
-Only `UserPromptSubmit` pays for a `jq` parse, because the prompt text and the
-permission mode are the two things no argument can carry; every other event passes
-its state as an argument and carries the rest forward.
-
-One file per pane, because N Claude processes have no way to coordinate a shared
-one; tmpfs, because these are claims about processes alive *right now* and shouldn't
-survive a reboot. A pane whose Claude was `SIGKILL`ed leaves an orphan file, which is
-never read (lookups are keyed by panes tmux still lists) and is swept at startup.
-
-**Scope.** The hooks are attached with `claude --settings`, so they apply to the
-Claudes *this workspace* starts and nothing else — `~/.claude/settings.json` is
-untouched and a Claude you run by hand anywhere else is unaffected (it reports
-nothing, and shows no glyph). To make it global instead, merge the `hooks` block
-from `claude/hooks.settings.json` into `~/.claude/settings.json` and drop the
-`--settings` flag from `cmd` in `util/claude_agents.lua`.
 
 > **Porting this to your machine:** `claude/hooks.settings.json` stores the hook
 > command as an **absolute path** (`/home/cstralpt/.config/nvim/claude/agent-status.sh`)
