@@ -56,8 +56,11 @@ local M = {}
 ---       grouped session, not just while collaborating. Required alongside shared_local: without it
 ---       every window would BE the shared session and switching group in one would yank all of them.
 ---@field kill_when_last boolean tear the shared canonical session down once the last Neovim using
----       it exits. Only meaningful with shared_local: a per-instance workspace is already owned and
----       killed by its own instance.
+---       it exits. Needed by ANY workspace whose canonical session can be shared -- that is
+---       shared_local ones always, and every workspace while collaborating, since a collaborative
+---       canonical session is deliberately never in owned_sessions (a mirror window may still be
+---       attached to it) and so nothing else would ever reap it. Without this a collab workspace
+---       outlives every Neovim that used it, panes and all, with whatever they were running.
 ---@field float { width: number, height: number }
 ---@field missing_msg string shown when an action runs before the workspace exists
 ---@field single_view boolean? when true, an implicit reveal (W.show) is suppressed while ANOTHER

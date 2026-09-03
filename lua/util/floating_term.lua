@@ -27,6 +27,16 @@ return require("util.tmux_workspace").new({
   -- session still gets fish (a session-scoped option does not propagate into a
   -- session group -- verified: it fell back to bash).
   set_global_shell = true,
+  -- Don't leak the workspace on exit. Outside collaboration the pid-keyed
+  -- session is in owned_sessions and dies with this Neovim anyway, so this
+  -- changes nothing there. While collaborating it is the ONLY thing that
+  -- reaps "floatterm-root<port>": that name is shared, so it is deliberately
+  -- never owned by any single instance, and it was surviving every window
+  -- that ever used it -- leaving dev servers (`pnpm start` and friends)
+  -- running in detached panes until the machine rebooted. kill_when_last
+  -- refcounts by attached client and view session, reaping stale pids, so
+  -- the workspace only goes once no collaborator is left in it.
+  kill_when_last = true,
   float = { width = 0.97, height = 0.95 },
   missing_msg = "No floating terminal yet (<C-/> to start one)",
 })
