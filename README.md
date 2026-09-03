@@ -256,7 +256,7 @@ independently rather than decoded from one blob of colour.
 
 
 > **Porting this to your machine:** `claude/hooks.settings.json` stores the hook
-> command as an **absolute path** (`/home/cstralpt/.config/nvim/claude/agent-status.sh`)
+> command as an **absolute path** (`~/.config/nvim/claude/agent-status.sh`)
 > — Claude runs hooks without a shell, so `~` and `$HOME` are not expanded and a
 > relative path would resolve against whatever cwd Claude happened to start in.
 > Every `command` in that file has to be rewritten for your own home directory, and
@@ -310,14 +310,6 @@ affected and your ordinary shells keep their normal padding:
 foot -o "main.pad=0x0 center" nvim
 ```
 
-The `center` keyword matters. A terminal grid is a whole number of cells, so unless
-the window height happens to be an exact multiple of the cell height there are
-leftover pixels, and foot's default is to dump **all** of them on the right and
-bottom edges — a visible strip of wallpaper under the statusline. `center` splits the
-remainder evenly instead. It cannot be driven to zero (negative padding isn't a
-thing — `pad` is unsigned); an even 8px top and bottom simply reads as intentional
-where 16px only at the bottom reads as a misaligned window.
-
 Those flags live in **one** place, `~/.local/bin/nvim-foot`, so the keybind and the
 shell wrappers can't drift apart when you retune the padding:
 
@@ -360,48 +352,6 @@ silently doing nothing.
 
 Arguments pass through verbatim, so `nvim .`, `nvim file`, and `nvim +42 file` all
 behave normally; foot inherits the current directory, so `.` resolves where you ran it.
-
-These are **fish** functions — if your interactive shell is bash or zsh they don't
-apply; see the setup prompt below.
-
-> **Why a new window and not the current one?** Padding is fixed when a window is
-> created: foot has no control sequence for `pad` (`foot-ctlseqs(7)` has nothing for
-> it) and no config-reload signal (`SIGUSR1`/`SIGUSR2` only switch colour themes), and
-> the padding is space drawn *outside* the grid the application ever sees. So an
-> already-running terminal cannot be made zero-padding after the fact by any means —
-> a fresh window is the only way to get one. The alternative is putting
-> `pad=0x0 center` in `foot.ini` globally, which also strips padding from every
-> ordinary shell.
-
-### Terminal fallback
-
-`<leader>iss` prefers foot (with the padding above) but isn't foot-only: it walks a
-list and takes the first terminal actually installed, so the mirror still opens on a
-machine without foot.
-
-| Order | Terminal | Working-directory flag |
-| --- | --- | --- |
-| 1 | `foot` | `-D <cwd>` |
-| 2 | `ghostty` | `--working-directory=<cwd> -e` |
-| 3 | `kitty` | `--directory <cwd>` |
-| 4 | `alacritty` | `--working-directory <cwd> -e` |
-| 5 | `wezterm` | `start --cwd <cwd>` |
-| 6 | `konsole` | `--workdir <cwd> -e` |
-| 7 | `gnome-terminal` | `--working-directory=<cwd> --` |
-| 8 | `xfce4-terminal` | `--working-directory=<cwd> -x` |
-| 9 | `x-terminal-emulator` | *(none — Debian's generic alternative)* |
-| 10 | `xterm` | *(none)* |
-
-Each entry carries its own directory flag because that directory is **load-bearing,
-not cosmetic**: the generated join script never `:cd`s, so the mirror resolves the
-synced buffer name against whatever cwd it starts in (`util/instant_bufname.lua`). A
-mirror that lands in `$HOME` instead of the project silently fails to find the file
-and times out after 30 seconds. Passing the job a cwd is not sufficient on its own —
-foot resets it during child-shell startup — which is why the last two entries, which
-have no such flag, are a genuine last resort rather than equals of the ones above.
-
-If none of the ten is installed, the session is still hosted and says so: join it
-from another nvim with `<leader>isj`.
 
 ## 🚀 Setting this up on your own machine
 
