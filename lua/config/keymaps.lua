@@ -117,7 +117,27 @@ map("n", "<leader>a]", agents.next_group, { desc = "Claude: next group" })
 map("n", "<leader>a[", agents.prev_group, { desc = "Claude: prev group" })
 map("n", "<leader>ax", agents.close_agent, { desc = "Claude: close this agent" })
 map("n", "<leader>az", agents.zoom, { desc = "Claude: show only this agent" })
-map("n", "<leader>af", agents.pick, { desc = "Claude: pick an agent" })
+-- Counted, this skips the picker AND the float entirely: `3<leader>af` just
+-- retargets where the next send lands, read off the statusline pills. Bare, it
+-- is still the picker, which does reveal -- browsing what each agent holds and
+-- then landing in front of the one you chose is the whole point of that path.
+map("n", "<leader>af", function()
+  local count = vim.v.count
+  if count > 0 then
+    agents.focus_slot(count)
+  else
+    agents.pick()
+  end
+end, { desc = "Claude: pick an agent (count: focus slot, no float)" })
+
+-- Cycle focus without opening anything -- the keyboard version of clicking a
+-- pill, for when you don't want to aim at one.
+map("n", "<leader>aj", function()
+  agents.cycle(1)
+end, { desc = "Claude: focus next agent (no float)" })
+map("n", "<leader>ak", function()
+  agents.cycle(-1)
+end, { desc = "Claude: focus prev agent (no float)" })
 map("n", "<leader>am", function()
   agents.move_to_group(vim.v.count)
 end, { desc = "Claude: move agent to a group" })

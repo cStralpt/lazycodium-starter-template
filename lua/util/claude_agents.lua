@@ -59,6 +59,17 @@ local ws = require("util.tmux_workspace").new({
   set_global_shell = false,
   float = { width = 0.9, height = 0.9 },
   missing_msg = "No Claude workspace yet (<leader>ac to start one)",
+  -- One screen at a time. Every Neovim on this box shares ONE workspace, so a
+  -- <leader>as from this window would otherwise pop open a second view of the
+  -- agents the window next to it is already showing -- the same panes twice,
+  -- both shrunk to the smaller client. The send still lands and tmux's own
+  -- select-pane still moves focus, so the window that HAS the workspace open
+  -- shows the result; this one just stays out of the way.
+  --
+  -- Only the implicit reveals. <leader>ac (W.toggle) is exempt by design: that
+  -- one is you explicitly asking for the workspace HERE.
+  single_view = true,
+  elsewhere_msg = "Claude workspace is already open in another Neovim window",
 })
 
 M.workspace = ws
@@ -171,6 +182,9 @@ end
 local function resolve(count)
   local agents = M.list()
   if #agents == 0 then
+    -- Silent on purpose: M.send() calls this on a cold workspace and then goes
+    -- on to START one, so a warning here would fire immediately before a
+    -- perfectly successful send. Callers that cannot recover say so themselves.
     return nil
   end
   if count and count > 0 then
@@ -192,10 +206,69 @@ function M.focus(agent)
   if not agent then
     return
   end
-  vim.fn.system({ "tmux", "select-window", "-t", ws.session() .. ":" .. agent.group })
+  -- view_session(), not session(): focusing must work from a Neovim that has
+  -- never opened the float, which is now the normal case for the second window.
+  -- Selecting the window on the canonical session is harmless -- nothing is
+  -- attached to it -- and select-pane below sets the WINDOW's active pane,
+  -- which every grouped session shares, so the send target moves for everyone.
+  vim.fn.system({ "tmux", "select-window", "-t", ws.view_session() .. ":" .. agent.group })
   vim.fn.system({ "tmux", "select-pane", "-t", agent.pane })
   ws.refresh_indicator()
   M.redraw()
+end
+
+---Focus WITHOUT revealing -- the counted form of the picker, `3<leader>af`.
+---
+---Focus and reveal are separate concerns and this is the half that has no
+---window in it: focus is tmux's own active pane, so retargeting where the next
+---<leader>as lands never needed the float open. The slot is the number already
+---printed on the statusline pill, so this is "aim at what I'm reading".
+---@param count integer? slot to focus (vim.v.count); nil/0 = no-op
+function M.focus_slot(count)
+  if not count or count == 0 then
+    return
+  end
+  -- Listed here rather than through resolve() so the two failures can be told
+  -- apart: no workspace at all, versus a workspace without that slot.
+  local agents = M.list()
+  if #agents == 0 then
+    vim.notify("No Claude agents yet (<leader>ac to start one)", vim.log.levels.WARN)
+    return
+  end
+  local agent = agents[count]
+  if not agent then
+    vim.notify(("No Claude agent %d (%d running)"):format(count, #agents), vim.log.levels.WARN)
+    return
+  end
+  M.focus(agent)
+  vim.notify(("-> %d %s"):format(agent.slot, agent.name))
+end
+
+---Step focus to the next/previous agent, wrapping, again without revealing.
+---
+---Walks M.list()'s order -- the same order the pills are drawn in -- so the
+---focus ring on screen moves one pill per press rather than jumping by
+---whatever tmux's own pane order happens to be.
+---@param dir integer 1 = next, -1 = previous
+function M.cycle(dir)
+  local agents = M.list()
+  if #agents == 0 then
+    vim.notify("No Claude agents yet (<leader>ac to start one)", vim.log.levels.WARN)
+    return
+  end
+  local at = 0
+  for i, a in ipairs(agents) do
+    if a.active then
+      at = i
+      break
+    end
+  end
+  -- No active agent found (focus sits outside the workspace) -- start at the
+  -- first one rather than doing nothing, so the key always moves somewhere.
+  local nth = at == 0 and 1 or ((at - 1 + dir) % #agents) + 1
+  local agent = agents[nth]
+  M.focus(agent)
+  vim.notify(("-> %d %s"):format(agent.slot, agent.name))
 end
 
 --=============================================================================
@@ -753,9 +826,13 @@ end
 ---Click handler for a statusline agent pill. 'statusline' click syntax only
 ---accepts a callable NAME, not a closure, so this is registered globally --
 ---the same pattern the workspace winbar uses.
+---Focus only -- clicking a pill means "target that agent", not "open the
+---workspace". Revealing here made the statusline the one place you could not
+---retarget a send without a float landing on top of the file you were reading.
+---When the float IS already on screen it follows this focus by itself, since
+---it is a live tmux client, so nothing is lost by not calling show().
 function _G.ClaudeAgentPillClick(slot)
   M.focus(slot)
-  ws.show()
 end
 
 ---Index of the leftmost rendered agent. Lives on M rather than in a closure so

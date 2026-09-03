@@ -213,6 +213,34 @@ first. Where the new agent is rooted depends on where you pressed the key: from 
 **editor** it uses the current file's project root; from **inside a pane** it
 inherits that pane's directory, so a group stays in its own repo.
 
+### Focus without opening anything
+
+Focus and reveal are separate: focus **is** tmux's active pane, so retargeting where
+the next send lands never needed the float on screen. These three never open it.
+
+| Keybinding | What it does |
+| --- | --- |
+| `<leader>aj` / `<leader>ak` | Focus the next / previous agent, wrapping |
+| `N<leader>af` | Focus agent N directly — no picker, no float (`3<leader>af`) |
+| *click a statusline pill* | Focus that agent |
+
+Bare `<leader>af` still opens the picker and lands you in front of what you chose —
+browsing what each agent is holding is the one case where you did mean to look.
+
+**One screen at a time.** Every Neovim on the machine shares one workspace, so a
+`<leader>as` from the window next door used to pop open a *second* view of the agents
+you were already looking at — the same panes twice, both shrunk to the smaller tmux
+client. Now the implicit reveals check first: if another Neovim window already has the
+workspace on screen, the send still lands and focus still moves, but this window stays
+out of the way and says so. `<leader>ac` is exempt — that one is you explicitly asking
+for the workspace *here*.
+
+Visibility can't be read from tmux: the `tmux attach` client stays attached while the
+float is merely hidden, so `session_attached` is true long after it left the screen.
+Each window publishes its own state instead, as a global tmux user option keyed by pid
+(`@ClaudeWorkspace-view-<pid>`), reaped on read via `/proc` so a Neovim that was
+`SIGKILL`ed can't lock everyone else out of their own workspace forever.
+
 ### Sending context
 
 Every send takes an optional **count** — `2<leader>as` delivers to agent 2 without
@@ -231,6 +259,11 @@ The number is printed on the statusline pill, so it's read, not memorised.
 Sends go to the **focused** agent, which is simply tmux's active pane — whichever
 one you last touched. Two Neovim windows looking at the same group therefore agree
 on it with nothing to sync.
+
+Reads fall back to the canonical session, so a Neovim that has never opened the float
+still sees every agent — grouped tmux sessions share their windows, so it's the same
+pane list either way. Without that, a freshly started window drew an empty board and
+reported "No Claude agents yet" about agents plainly running next door.
 
 `<leader>ai` reuses `claudecode.nvim`'s own model list (`claudecode.config.defaults.models`)
 so the two pickers never drift apart, but it can't reuse `ClaudeCodeSelectModel` itself —
@@ -309,8 +342,11 @@ only the slice that fits, with clickable arrows for the rest.
 ‹2   3 api …    4 api ⚡ ✓ fix auth 6m    5 web …   2›
 ```
 
-Click an arrow to page one agent that way. The window also **follows focus**, so the
-agent `<leader>as` targets is never the one you can't see.
+Click an arrow to page one agent that way, or a **pill** to focus that agent — the
+click only retargets, it never opens the float, so the statusline is a place you can
+aim a send from without a window landing on top of the file you're reading. The board
+also **follows focus**, so the agent `<leader>as` targets is never the one you can't
+see.
 
 How many fit is **measured, not assumed** — a wider monitor shows more agents and
 hides fewer, and space is only reserved for a neighbour that's actually rendering.

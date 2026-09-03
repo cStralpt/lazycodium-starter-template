@@ -60,6 +60,10 @@ local M = {}
 ---       killed by its own instance.
 ---@field float { width: number, height: number }
 ---@field missing_msg string shown when an action runs before the workspace exists
+---@field single_view boolean? when true, an implicit reveal (W.show) is suppressed while ANOTHER
+---       Neovim on this machine already has the float on screen. Only meaningful with shared_local:
+---       a per-instance workspace is never visible anywhere else. W.toggle is deliberately exempt.
+---@field elsewhere_msg string? shown when single_view suppresses a reveal
 
 ---@param config TmuxWorkspaceConfig
 function M.new(config)
@@ -148,6 +152,42 @@ function M.new(config)
     alive_cache[name] = nil
     return false
   end
+
+  ---The session to READ the workspace through.
+  ---
+  ---my_session() is this instance's own view session, and it does not exist
+  ---until this instance has opened the float (or sent to a cold workspace) --
+  ---ensure_session() is what creates it. Every read keyed to it therefore
+  ---returned NOTHING in a Neovim that had merely started: no panes, so an empty
+  ---statusline board, and `<leader>af` reporting "No Claude agents yet" while
+  ---the agents were plainly running in the window next door.
+  ---
+  ---That was survivable while every path revealed the float (opening one
+  ---created the view session as a side effect); it stopped being survivable the
+  ---moment reveals could be suppressed and focus became a thing you do without
+  ---ever opening anything.
+  ---
+  ---Falling back to the canonical session is exact for panes: grouped sessions
+  ---SHARE their windows, so the pane list is the same object either way. Only
+  ---"which group is current" is per-session, and canonical's answer is the right
+  ---one to borrow for a window that has no view of its own yet.
+  ---
+  ---Read-only. It never creates the view session, deliberately -- that would
+  ---enroll every Neovim on the box in kill_when_last's reference count merely
+  ---for drawing a statusline, and the workspace would then outlive the last
+  ---window actually using it.
+  local function view_session()
+    local mine = my_session()
+    if session_alive(mine) then
+      return mine
+    end
+    local canonical = canonical_session()
+    if session_alive(canonical) then
+      return canonical
+    end
+    return mine
+  end
+  W.view_session = view_session
 
   -- Sessions this Neovim instance actually created (as opposed to a shared
   -- canonical session another collaborator created) -- always safe to kill on
@@ -538,6 +578,114 @@ function M.new(config)
 
   local pane_bound = {}
 
+  ---Is the process behind a "-w<pid>" view session (or a viewer marker) still
+  ---running? Read from /proc rather than forking `kill -0`: this also runs
+  ---during exit, where every subprocess is latency the user waits on.
+  local function pid_alive(pid)
+    return vim.uv.fs_stat("/proc/" .. pid) ~= nil
+  end
+
+  ---VIEWERS -- who currently has this workspace ON SCREEN, across every Neovim
+  ---on the box.
+  ---
+  ---`attached` and Snacks' bookkeeping are per-instance, so they can only ever
+  ---answer "is the float open HERE". With shared_local every Neovim attaches to
+  ---the same grouped session, so a send from window B would reveal the very
+  ---same workspace window A is already showing -- the same agents twice, once
+  ---per screen.
+  ---
+  ---tmux cannot answer this on its own: the `tmux attach` client stays attached
+  ---while the float is merely HIDDEN (the buffer lives on), so session_attached
+  ---is true long after the workspace left the screen. So visibility is
+  ---published explicitly, one global tmux user option per viewer, keyed by pid.
+  ---Global options are the natural store here -- they are server-wide, survive
+  ---the session renames adopt_workspace does, and need no file or lock.
+  ---
+  ---Markers are reaped by pid on read, so a Neovim that was SIGKILLed (and so
+  ---never ran VimLeavePre) cannot wedge every other window out of its own
+  ---workspace forever.
+  local function viewer_option(pid)
+    return ("@%s-view-%d"):format(config.id, pid or vim.fn.getpid())
+  end
+
+  ---Is a WINDOW in this Neovim showing the float right now? Same question
+  ---W.show() asks -- `attached` records the buffer, not whether anything is
+  ---displaying it.
+  local function float_visible()
+    if not (attached and vim.api.nvim_buf_is_valid(attached.buf)) then
+      return false
+    end
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == attached.buf then
+        return true
+      end
+    end
+    return false
+  end
+
+  ---Publish (or retract) this instance's marker. Cheap when nothing changed:
+  ---the last published value is remembered, so the common case -- reveal while
+  ---already revealed -- forks nothing.
+  local marker_set = false
+  local function sync_viewer()
+    if not config.single_view then
+      return
+    end
+    local visible = float_visible()
+    if visible == marker_set then
+      return
+    end
+    marker_set = visible
+    if visible then
+      vim.fn.system({ "tmux", "set-option", "-g", viewer_option(), "1" })
+    else
+      vim.fn.system({ "tmux", "set-option", "-gu", viewer_option() })
+    end
+  end
+
+  ---Does another LIVE Neovim have this workspace on screen?
+  local function viewer_elsewhere()
+    if not config.single_view then
+      return false
+    end
+    local prefix = ("@%s-view-"):format(config.id)
+    local mine = viewer_option()
+    local rows = vim.fn.systemlist({ "tmux", "show-options", "-g" })
+    -- A failed query counts as "nobody else": the reveal you asked for is the
+    -- safer failure than silently doing nothing.
+    if vim.v.shell_error ~= 0 then
+      return false
+    end
+    local found = false
+    for _, row in ipairs(rows) do
+      local name = row:match("^(%S+)")
+      if name and name ~= mine and name:sub(1, #prefix) == prefix then
+        local pid = tonumber(name:sub(#prefix + 1))
+        if pid and pid_alive(pid) then
+          found = true
+        else
+          vim.fn.system({ "tmux", "set-option", "-gu", name })
+        end
+      end
+    end
+    return found
+  end
+
+  ---Keep the marker honest without polling: the float leaving the screen is
+  ---always a window event on its own buffer. Scheduled because WinClosed fires
+  ---just BEFORE the window is removed, so float_visible() would still see it.
+  local function watch_visibility(buf)
+    if not config.single_view then
+      return
+    end
+    vim.api.nvim_create_autocmd({ "WinClosed", "BufWinLeave", "BufWipeout" }, {
+      buffer = buf,
+      callback = function()
+        vim.schedule(sync_viewer)
+      end,
+    })
+  end
+
   ---Move between TMUX PANES with the same <C-hjkl> used for Neovim windows
   ---everywhere else. Buffer-local and set only on the float's own buffer, so
   ---it overrides (not adds to) the global <C-hjkl> = ":wincmd" mappings --
@@ -551,6 +699,7 @@ function M.new(config)
       return
     end
     pane_bound[buf] = true
+    watch_visibility(buf)
     local dirs = { h = "-L", j = "-D", k = "-U", l = "-R" }
     for key, flag in pairs(dirs) do
       vim.keymap.set({ "n", "t" }, "<C-" .. key .. ">", function()
@@ -639,6 +788,9 @@ function M.new(config)
       nudge_resize(terminal.win, terminal.buf)
     end
     refresh_indicator()
+    -- Covers hiding as well as showing: toggle() calls this after Snacks may
+    -- have CLOSED the float, so the marker is retracted on the same path.
+    sync_viewer()
     return terminal
   end
 
@@ -665,6 +817,22 @@ function M.new(config)
   ---see it. The check now asks the only question that matters: is a window
   ---showing this buffer right now?
   function W.show()
+    -- SINGLE VIEW. Everything that implicitly reveals the workspace -- sending
+    -- a selection, splitting off an agent, picking one, switching group --
+    -- comes through here, so one check covers all of them. If another Neovim
+    -- window already has this (shared) workspace on screen, the reveal is
+    -- pointless: the action itself has already landed there, and tmux's own
+    -- select-pane means that window is looking at the right agent. Opening a
+    -- second view of the same session just duplicates it and shrinks every
+    -- pane to the smaller client.
+    --
+    -- Never suppresses when the float is already up HERE -- then show() is
+    -- doing its other job, focusing it -- and never applies to W.toggle(),
+    -- which is you explicitly asking for the workspace in THIS window.
+    if config.single_view and not float_visible() and viewer_elsewhere() then
+      vim.notify(config.elsewhere_msg or "Workspace is already open in another Neovim window")
+      return
+    end
     local target = ensure_session()
     close_stale_float(target)
     local cmd_argv, opts = float_spec(target)
@@ -762,7 +930,7 @@ function M.new(config)
   ---Every group (tmux window) that exists, in index order.
   ---@return { index: integer, active: boolean, panes: integer }[]
   function W.list_groups()
-    local target = my_session()
+    local target = view_session()
     if not session_alive(target) then
       return {}
     end
@@ -888,7 +1056,7 @@ function M.new(config)
 
   ---Whether the focused pane is currently zoomed, for indicators.
   function W.is_zoomed()
-    local target = my_session()
+    local target = view_session()
     if not session_alive(target) then
       return false
     end
@@ -935,7 +1103,7 @@ function M.new(config)
   ---wrong agent. Anything drawn on a redraw path wants list_panes_async instead.
   ---@return { pane: string, window: integer, active: boolean, group_active: boolean, cwd: string }[]
   function W.list_panes()
-    local target = my_session()
+    local target = view_session()
     if not session_alive(target) then
       return {}
     end
@@ -953,18 +1121,11 @@ function M.new(config)
   ---`cb` receives the pane list, or nil if the session is gone. It runs on the
   ---main loop, so it may touch the API freely.
   function W.list_panes_async(cb)
-    vim.system({ "tmux", "list-panes", "-s", "-t", my_session(), "-F", PANE_FORMAT }, { text = true }, function(res)
+    vim.system({ "tmux", "list-panes", "-s", "-t", view_session(), "-F", PANE_FORMAT }, { text = true }, function(res)
       vim.schedule(function()
         cb(res.code == 0 and parse_panes(vim.split(res.stdout or "", "\n", { trimempty = true })) or nil)
       end)
     end)
-  end
-
-  ---Is the process behind a "-w<pid>" view session still running? Read from
-  ---/proc rather than forking `kill -0`: this runs during exit, where every
-  ---subprocess is latency the user waits on.
-  local function pid_alive(pid)
-    return vim.uv.fs_stat("/proc/" .. pid) ~= nil
   end
 
   ---Tear down the SHARED canonical session once this is the last Neovim in it.
@@ -1050,6 +1211,9 @@ function M.new(config)
   -- shared canonical session is handled separately, by reference count.
   vim.api.nvim_create_autocmd("VimLeavePre", {
     callback = function()
+      if marker_set then
+        vim.fn.system({ "tmux", "set-option", "-gu", viewer_option() })
+      end
       for name in pairs(owned_sessions) do
         if session_alive(name) then
           vim.fn.system({ "tmux", "kill-session", "-t", name })
