@@ -88,6 +88,13 @@ end
 ---       a per-instance workspace is never visible anywhere else. W.toggle is deliberately exempt.
 ---@field elsewhere_msg string? shown when single_view suppresses a reveal
 
+---The workspace the cursor is in right now, or nil in an ordinary buffer.
+---Lets a shared keymap (<leader>qq) act on whichever workspace you are looking
+---at instead of needing one binding per instance.
+function M.focused()
+  return focused_workspace()
+end
+
 ---@param config TmuxWorkspaceConfig
 function M.new(config)
   local W = {}
@@ -1737,6 +1744,73 @@ function M.new(config)
       return -- someone else is still in here; leave the workspace alone
     end
     vim.fn.system({ "tmux", "kill-session", "-t", canonical })
+  end
+
+  ---Tear this workspace down on purpose: kill the tmux session and everything
+  ---running in it, and close the float.
+  ---
+  ---What VimLeavePre does automatically, made available while Neovim keeps
+  ---running -- so <leader>qq inside a float ends the thing you are looking at
+  ---rather than quitting the editor behind it.
+  ---
+  ---Kills the canonical session outright instead of going through
+  ---kill_canonical_if_last(): that one refuses while any other window still has
+  ---the workspace, which is right for an incidental exit and wrong for an
+  ---explicit "close this". A shared workspace (the Claude one) really does end
+  ---for every Neovim on the machine, so say so rather than doing it quietly.
+  ---@return boolean quit whether there was anything to tear down
+  function W.quit_workspace()
+    sb_dismiss()
+    local canonical = canonical_session()
+    if not session_alive(canonical) then
+      return false
+    end
+
+    local sharers = 0
+    if config.shared_local then
+      local out = vim.fn.systemlist({ "tmux", "list-sessions", "-F", "#{session_name}" })
+      if vim.v.shell_error == 0 then
+        for _, name in ipairs(out) do
+          local pid = name:match("^" .. vim.pesc(canonical) .. "%-w(%d+)$")
+          if pid and tonumber(pid) ~= vim.fn.getpid() then
+            sharers = sharers + 1
+          end
+        end
+      end
+    end
+
+    if attached and vim.api.nvim_buf_is_valid(attached.buf) then
+      -- Ends this window's `tmux attach` client. The session is killed below;
+      -- deleting the buffer alone would only detach.
+      vim.api.nvim_buf_delete(attached.buf, { force = true })
+    end
+    attached = nil
+
+    for name in pairs(owned_sessions) do
+      if session_alive(name) then
+        vim.fn.system({ "tmux", "kill-session", "-t", name })
+      end
+      owned_sessions[name] = nil
+    end
+    vim.fn.system({ "tmux", "kill-session", "-t", canonical })
+    alive_cache[canonical] = nil
+
+    if marker_set then
+      vim.fn.system({ "tmux", "set-option", "-gu", viewer_option() })
+      marker_set = false
+    end
+    refresh_indicator()
+
+    if sharers > 0 then
+      vim.notify(
+        ("Closed the %s -- it was shared with %d other Neovim window%s")
+          :format(W.what(), sharers, sharers == 1 and "" or "s"),
+        vim.log.levels.WARN
+      )
+    else
+      vim.notify(("Closed the %s"):format(W.what()))
+    end
+    return true
   end
 
   -- Don't leave orphaned tmux sessions behind once this Neovim instance exits.

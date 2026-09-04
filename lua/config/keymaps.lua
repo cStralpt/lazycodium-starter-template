@@ -108,6 +108,21 @@ map("n", "<leader>tx", floating_term.guard(floating_term.close_pane, "<leader>tx
 map("n", "<leader>t]", floating_term.guard(floating_term.next_tab, "<leader>t]"), { desc = "Terminal: next tab" })
 map("n", "<leader>t[", floating_term.guard(floating_term.prev_tab, "<leader>t["), { desc = "Terminal: prev tab" })
 
+-- <leader>qq closes what you are LOOKING AT.
+--
+-- LazyVim maps it to :qa, which from inside a float quit the whole editor and
+-- left the tmux session -- every tab, pane and process in it -- running behind
+-- your back. Inside a workspace it now tears that workspace down instead; in an
+-- ordinary buffer it still quits Neovim, so the editor keeps the binding you
+-- already know and the floats layer their own meaning on top of it.
+map("n", "<leader>qq", function()
+  local ws = require("util.tmux_workspace").focused()
+  if ws and ws.quit_workspace() then
+    return
+  end
+  vim.cmd("qa")
+end, { desc = "Quit workspace (or all, outside one)" })
+
 -- The Claude workspace: N Claudes as tmux panes, in groups (util/claude_agents
 -- .lua). Mapped EAGERLY here, not as lazy `keys` on coder/claudecode.nvim,
 -- which is where they used to live.
