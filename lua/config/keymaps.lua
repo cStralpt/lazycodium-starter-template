@@ -62,7 +62,22 @@ map("t", "<C-l>", "<cmd>wincmd l<cr>", { desc = "Go to Right Window" })
 -- reach Neovim reliably from every keyboard layout/terminal emulator (some
 -- need AltGr for backslash, some swallow the chord). <C-g> is far more
 -- portable and unused by Claude Code, so bind it to the same action.
-map("t", "<C-g>", "<C-\\><C-n>", { desc = "Exit terminal mode (terminal-normal)" })
+--
+-- Inside a tmux workspace float (<C-/>, <leader>ac) it does something better
+-- than plain terminal-normal mode, because there plain terminal-normal mode is
+-- close to useless: `tmux attach` runs on the alternate screen, so that buffer
+-- is one screen tall and j/k have nothing to move through. W.scrollback()
+-- instead drops the pane's real history into an ordinary buffer -- so scrolling
+-- works, and so does every normal-mode mapping you already have, including
+-- <C-c> to the clipboard. Everywhere else <C-g> is unchanged.
+map("t", "<C-g>", function()
+  for _, ws in ipairs({ require("util.floating_term"), require("util.claude_agents").workspace }) do
+    if ws.in_float() then
+      return ws.scrollback()
+    end
+  end
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-\\><C-n>", true, false, true), "n", false)
+end, { desc = "Exit terminal mode (scrollback in a workspace float)" })
 
 -- <C-/> toggles a near-fullscreen floating terminal that's actually a
 -- persistent tmux session (lua/util/floating_term.lua) -- so, unlike a

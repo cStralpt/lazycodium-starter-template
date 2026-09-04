@@ -182,6 +182,36 @@
 
   Note: on macos you probably need to add command(cmd) keybindings in order this config to work flawlessly.
 
+## 🖥️ Floating terminal (tmux)
+
+A near-fullscreen float backed by a persistent tmux session, so splits, tabs and
+running processes survive hiding it. Requires `tmux`.
+
+| Keybinding | What it does |
+| --- | --- |
+| `<C-/>` | Toggle the floating terminal |
+| `<leader>ts` / `<leader>tv` | Split pane horizontally / vertically |
+| `<leader>tn` | New tab (terminal group) |
+| `<leader>t]` / `<leader>t[` | Next / previous tab |
+| `<leader>tx` | Close pane |
+| `<C-h/j/k/l>` | Move between panes |
+| `<C-g>` | Scrollback in a normal buffer — see below |
+
+### Scrollback
+
+`tmux attach` runs on the alternate screen, so the terminal buffer is one screen
+tall and normal mode can't scroll it. `<C-g>` instead loads the pane's full
+history (50k lines, colors preserved) into an ordinary buffer.
+
+| Keybinding | What it does |
+| --- | --- |
+| `<C-g>` | Open the scrollback buffer |
+| `j` `k` `<C-u>` `<C-d>` `/` `v` `y` `<C-c>` | Ordinary normal mode — every mapping you already have |
+| `q` `<Esc>` `<C-g>` `i` `a` | Back to the live terminal |
+
+Mouse wheel also works directly in the terminal via tmux copy-mode, where `v`
+selects and `y` or `<C-c>` copies to the system clipboard.
+
 ## 🤖 Claude Code in Neovim
 
 Run **many Claudes at once**, shared across every Neovim window on the machine.
@@ -191,8 +221,7 @@ Requires `tmux`.
 
 ### Workspace
 
-Mirrors the `<leader>t*` terminal bindings one for one — same vocabulary, nothing
-new to learn.
+Mirrors the `<leader>t*` terminal bindings one for one.
 
 | Keybinding | What it does |
 | --- | --- |
@@ -207,16 +236,13 @@ new to learn.
 | `<leader>am` | Move this agent — pick which tab to land beside, or a new group of its own |
 | `<C-h/j/k/l>` | Move between panes |
 
-`<leader>ao` / `<leader>aV` / `<leader>an` work from the editor too: they create the
-workspace if it doesn't exist, add the agent, and open the float — no `<leader>ac`
-first. Where the new agent is rooted depends on where you pressed the key: from the
-**editor** it uses the current file's project root; from **inside a pane** it
-inherits that pane's directory, so a group stays in its own repo.
+`<leader>ao` / `<leader>aV` / `<leader>an` work from the editor too. From the
+**editor** the new agent uses the current file's project root; from **inside a
+pane** it inherits that pane's directory.
 
 ### Focus without opening anything
 
-Focus and reveal are separate: focus **is** tmux's active pane, so retargeting where
-the next send lands never needed the float on screen. These three never open it.
+These three never open the float.
 
 | Keybinding | What it does |
 | --- | --- |
@@ -227,8 +253,7 @@ the next send lands never needed the float on screen. These three never open it.
 ### Sending context
 
 Every send takes an optional **count** — `2<leader>as` delivers to agent 2 without
-moving focus, so you can nudge another agent mid-thought and stay where you are.
-The number is printed on the statusline pill, so it's read, not memorised.
+moving focus. The number is printed on the statusline pill.
 
 | Keybinding | What it does |
 | --- | --- |
@@ -236,14 +261,12 @@ The number is printed on the statusline pill, so it's read, not memorised.
 | `<leader>al` | Mention the current line |
 | `<leader>mm` | Toggle a send-mark on this line (visual: every line in the selection) |
 | `<leader>mc` | Clear all send-marks in this buffer |
-| `<leader>aM` | Send all marked lines, grouped into contiguous `file:start-end` blocks; marks clear only once the send succeeds |
-| `<leader>ai` | Switch the active agent's model — same picker as `<leader>aIm`, but sends `/model <value>` into its live session instead of opening a new terminal |
+| `<leader>aM` | Send all marked lines, grouped into contiguous `file:start-end` blocks |
+| `<leader>ai` | Switch the active agent's model in its live session |
 
 ### Agent status
 
-One agent is one colour everywhere — but colour says **which** agent, never what it
-is doing. Status is a separate channel: a glyph on the pill, so the two can be read
-independently rather than decoded from one blob of colour.
+Colour says **which** agent; the glyph on the pill says what it's doing.
 
 | Glyph | Meaning |
 | --- | --- |
@@ -254,24 +277,15 @@ independently rather than decoded from one blob of colour.
 | `◇` | Plan mode — it won't edit anything |
 | `⚡` | Permissions bypassed — it will never stop to ask, so it can never show `!` |
 
-
-> **Porting this to your machine:** `claude/hooks.settings.json` stores the hook
-> command as an **absolute path** (`~/.config/nvim/claude/agent-status.sh`)
-> — Claude runs hooks without a shell, so `~` and `$HOME` are not expanded and a
-> relative path would resolve against whatever cwd Claude happened to start in.
-> Every `command` in that file has to be rewritten for your own home directory, and
-> `agent-status.sh` has to stay executable (`chmod +x`), or the hooks fail silently
-> and every agent shows no glyph at all.
-
-> **Note:** `!` relies on Claude actually raising a permission prompt. Under
-> `--dangerously-skip-permissions` it never does, so that glyph stays quiet — `✓`
-> and `…` are the signals that still carry in bypass mode.
+> **Porting this to your machine:** every `command` in `claude/hooks.settings.json`
+> is an **absolute path** and has to be rewritten for your own home directory, and
+> `agent-status.sh` has to stay executable (`chmod +x`) — Claude runs hooks without
+> a shell, so `~` and `$HOME` are not expanded.
 
 ### MCP review session (`<leader>aI…`)
 
-Separate on purpose: `coder/claudecode.nvim` can hold only **one** live MCP
-connection per Neovim process, so this stays a single shared session for inline
-diff accept/reject.
+Separate on purpose: `coder/claudecode.nvim` holds only **one** live MCP connection
+per Neovim process, so this stays a single shared session for inline diffs.
 
 | Keybinding | What it does |
 | --- | --- |
@@ -282,11 +296,8 @@ diff accept/reject.
 
 ## 🪟 Multi-Window Session Mirroring (dual-monitor)
 
-Edit the same file from two `nvim` windows at once — great for a second monitor. Each window keeps its own cursor, so you're never forced to look at the same spot, but content and terminals stay live-synced. Localhost only.
-
-(Claude agents are shared across windows on their own — see above — and don't need a mirrored session.)
-
-Requires `tmux` (`sudo pacman -S tmux` or `paru -S tmux`) for terminal mirroring.
+Edit the same file from two `nvim` windows at once. Each window keeps its own
+cursor; content and terminals stay live-synced. Localhost only. Requires `tmux`.
 
 | Keybinding | What it does |
 | --- | --- |
@@ -294,82 +305,32 @@ Requires `tmux` (`sudo pacman -S tmux` or `paru -S tmux`) for terminal mirroring
 | `<leader>isj` | Join a session by port, if the auto-mirror didn't reach a window |
 | `<leader>isS` | Stop mirroring for this window |
 
-Both `<leader>iss` and the desktop keybind below open that second window through a
-terminal emulator, so which one gets used is a shared concern — see next section.
-
 ## 🖥️ Terminal integration (foot, zero padding)
 
-This config is written against [foot](https://codeberg.org/dnkl/foot) on Wayland, and
-opens editor windows with **no padding**, so the buffer meets the window edge instead
-of floating inside a 25px frame.
-
-Padding is set per-instance rather than in `foot.ini`, so only editor windows are
-affected and your ordinary shells keep their normal padding:
-
-```sh
-foot -o "main.pad=0x0 center" nvim
-```
-
-Those flags live in **one** place, `~/.local/bin/nvim-foot`, so the keybind and the
-shell wrappers can't drift apart when you retune the padding:
+Editor windows open with **no padding**, set per-instance so ordinary shells keep
+theirs. The flags live in one place, `~/.local/bin/nvim-foot`:
 
 ```sh
 #!/bin/sh
 exec foot -o "main.pad=0x0 center" nvim "$@"
 ```
 
-Three things point at it:
+| Entry point | Where it lives |
+| --- | --- |
+| `Super+C` | `$editor` in `~/.config/caelestia/hypr-vars.conf` (absolute path) |
+| `<leader>iss` mirror | `lua/plugins/instant.lua` (same flags, plus `-D`) |
+| `nvim` / `nv` | `~/.config/fish/functions/` |
 
-| Entry point | Where it lives | Notes |
-| --- | --- | --- |
-| `Super+C` | `$editor` in `~/.config/caelestia/hypr-vars.conf` | Absolute path — Hyprland's `PATH` doesn't necessarily include `~/.local/bin` |
-| `<leader>iss` mirror | `lua/plugins/instant.lua` | Same flags, plus `-D` for the working directory |
-| `nvim` / `nv` | `~/.config/fish/functions/` | Detached window; falls through to the real binary when not interactive |
-
-### The `nvim` and `nv` wrappers
-
-`nvim` opens a new zero-padding foot window rather than taking over the terminal you
-typed it in, so the editor always gets the window it was tuned for. `nv` is the same
-thing under a shorter name (`--wraps nvim`, so nvim's own completions still work).
-
-It is deliberately **not** an unconditional override:
-
-```fish
-if set -q NVIM; or not isatty stdin; or not isatty stdout
-    command nvim $argv
-    return $status
-end
-setsid -f nvim-foot $argv >/dev/null 2>&1
-```
-
-That guard is load-bearing, not defensive padding. Without it, anything invoking
-`nvim` as `$EDITOR` — `git commit`, `git rebase -i`, `crontab -e` — would get a
-*detached* window and an instant exit, so git would see an unmodified message and
-abort the commit. Pipes (`… | nvim -`) and nested nvim terminals (`$NVIM` set) fall
-through to the real binary for the same reason. There's a matching fallback for a
-machine with no foot installed, so the command degrades to plain nvim instead of
-silently doing nothing.
-
-Arguments pass through verbatim, so `nvim .`, `nvim file`, and `nvim +42 file` all
-behave normally; foot inherits the current directory, so `.` resolves where you ran it.
+The `nvim` / `nv` wrappers open a new zero-padding window, with a guard that falls
+through to the real binary when not on a TTY or when `$NVIM` is set — that's what
+keeps `git commit` and `git rebase -i` working.
 
 ## 🚀 Setting this up on your own machine
 
-Much of the above is wired to **one specific setup** — Arch + Hyprland + foot + fish,
-with absolute paths baked into the Claude hooks. **None of that is required.** foot is
-simply what the author uses; any terminal works, and the setup prompt below is written
-to adapt to whichever one you already like rather than to talk you into a new one.
-
-Only two things are genuinely required: `nvim` itself, and `tmux` if you want terminal
-mirroring. Everything else — the compositor keybind, the zero-padding windows, even
-which shell you use — bends to your setup.
-
-**Run this on a frontier model — [Claude Opus 5](https://claude.com/product/claude-code)
-or equivalent.** It's a multi-step job across your shell, compositor, package manager,
-and a Neovim config it has to read before changing: rewriting absolute paths in the
-hook config, picking the right per-instance flag for *your* terminal, and getting the
-in-place-vs-spawn branch right. Smaller models tend to guess a plausible-looking flag
-and leave you with a half-working setup that fails quietly.
+Only `nvim` and `tmux` are required. Everything else — compositor keybind, terminal,
+shell — adapts to your setup. **Run this on a frontier model** ([Claude Opus 5](https://claude.com/product/claude-code)
+or equivalent); smaller models tend to guess a plausible-looking flag and leave a
+half-working setup.
 
 <details>
 <summary>Setup prompt for Claude Code (click to expand)</summary>

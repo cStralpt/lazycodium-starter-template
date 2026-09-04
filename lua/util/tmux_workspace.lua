@@ -362,6 +362,56 @@ function M.new(config)
       vim.fn.system({ "tmux", "set-option", "-g", "mouse", "on" })
       vim.fn.system({ "tmux", "set-option", "-g", "history-limit", "50000" })
       vim.fn.system({ "tmux", "set-window-option", "-g", "mode-keys", "vi" })
+
+      -- Selecting and copying has the same shape as scrolling: it can only
+      -- happen inside tmux's copy-mode, never in Neovim. A mouse drag over the
+      -- float is forwarded to the job (mouse=a), so it never reaches Neovim's
+      -- visual mode, and the <C-c> map in config/keymaps.lua can't see a
+      -- selection that Neovim was never told about.
+      --
+      -- `mode-keys vi` above only gives copy-mode vi MOTIONS; it binds no
+      -- selection keys at all, so out of the box you can move the copy cursor
+      -- around and have no way to mark or take anything. These add the missing
+      -- half, and pipe straight to wl-copy rather than leaving the text in a
+      -- tmux paste buffer nothing else can reach.
+      --
+      -- copy-pipe-and-cancel for `y` (take it and leave copy-mode, the normal
+      -- end of a deliberate selection) but copy-pipe-NO-clear for the mouse, so
+      -- releasing a drag keeps both the selection and copy-mode alive and you
+      -- can adjust or keep scrolling instead of being dumped back at the prompt.
+      vim.fn.system({ "tmux", "bind-key", "-T", "copy-mode-vi", "v", "send-keys", "-X", "begin-selection" })
+      for _, key in ipairs({ "y", "C-c" }) do
+        -- C-c alongside vi's `y` so the float matches the <C-c> copy already
+        -- mapped for visual/insert mode in config/keymaps.lua -- one key for
+        -- "copy this", everywhere. It shadows copy-mode's default C-c (cancel),
+        -- which is no loss: Escape and q still cancel, and C-c now cancels too,
+        -- just with the selection taken on the way out.
+        vim.fn.system({
+          "tmux",
+          "bind-key",
+          "-T",
+          "copy-mode-vi",
+          key,
+          "send-keys",
+          "-X",
+          "copy-pipe-and-cancel",
+          "wl-copy",
+        })
+      end
+      vim.fn.system({
+        "tmux",
+        "bind-key",
+        "-T",
+        "copy-mode-vi",
+        "MouseDragEnd1Pane",
+        "send-keys",
+        "-X",
+        "copy-pipe-no-clear",
+        "wl-copy",
+      })
+      -- OSC 52 as well, so a copy still lands somewhere useful when the pane is
+      -- on a host without wl-copy (an ssh session inside the float).
+      vim.fn.system({ "tmux", "set-option", "-g", "set-clipboard", "on" })
     end
 
     workspace_session = canonical
@@ -859,6 +909,315 @@ function M.new(config)
     return attached ~= nil
       and vim.api.nvim_buf_is_valid(attached.buf)
       and vim.api.nvim_get_current_buf() == attached.buf
+  end
+
+  ---Swap the float from the live terminal to a NORMAL Neovim buffer holding
+  ---this pane's full tmux scrollback. The workspace's real "normal mode".
+  ---
+  ---Neovim's own terminal-normal mode cannot do this job, and no amount of
+  ---mapping fixes that: `tmux attach` runs on the ALTERNATE screen, so the
+  ---terminal buffer behind the float is exactly one screen tall, forever.
+  ---j/k there are not broken, they have nowhere to go -- every line of history
+  ---is inside tmux, in a buffer Neovim cannot see.
+  ---
+  ---tmux's own copy-mode can scroll it, but only by putting you in a THIRD
+  ---modal editor whose keys all belong to tmux: none of the mappings in this
+  ---config reach it, `y` fills a tmux paste buffer rather than a register, and
+  ---selecting is tmux's notion of selecting.
+  ---
+  ---So the history is copied OUT of tmux instead, into an ordinary scratch
+  ---buffer shown in the same window. From there everything is genuinely
+  ---Neovim: j/k, <C-u>/<C-d>, the mouse wheel, /, v, y, <C-c> to the clipboard,
+  ---and every existing normal-mode mapping -- <leader>ts, <leader>a* -- because
+  ---this IS normal mode, not an imitation of it.
+  ---
+  ---A snapshot, deliberately: the pane keeps running underneath and this does
+  ---not follow it. q/<Esc>/<C-g> puts the live terminal back.
+  -- ANSI -> highlights, for W.scrollback().
+  --
+  -- `capture-pane -e` keeps the pane's SGR escape sequences, which is the only
+  -- way to get the colors back -- but nothing in Neovim renders them in a normal
+  -- buffer, so without this pass they arrive as literal "ESC[38;5;244m" junk
+  -- wrapped around every word. Colorless output was the alternative and it made
+  -- log levels indistinguishable, which is most of what you scroll back to find.
+  local SB_NS = vim.api.nvim_create_namespace("tmux_workspace_scrollback")
+  local sb_hl = {} ---@type table<string, string> spec key -> highlight group name
+
+  ---xterm's 256-color palette as hex. 0-15 deliberately come from
+  ---g:terminal_color_* when the colorscheme sets them, so the scrollback matches
+  ---the colors the live terminal was just drawing rather than a generic guess.
+  local function sb_color(n)
+    if n < 16 then
+      local from_scheme = vim.g["terminal_color_" .. n]
+      if type(from_scheme) == "string" then
+        return from_scheme
+      end
+      local base = {
+        "#000000", "#cc0000", "#4e9a06", "#c4a000", "#3465a4", "#75507b", "#06989a", "#d3d7cf",
+        "#555753", "#ef2929", "#8ae234", "#fce94f", "#729fcf", "#ad7fa8", "#34e2e2", "#eeeeec",
+      }
+      return base[n + 1]
+    elseif n < 232 then
+      local levels = { 0, 95, 135, 175, 215, 255 }
+      local i = n - 16
+      return ("#%02x%02x%02x"):format(
+        levels[math.floor(i / 36) % 6 + 1],
+        levels[math.floor(i / 6) % 6 + 1],
+        levels[i % 6 + 1]
+      )
+    end
+    local g = 8 + (n - 232) * 10
+    return ("#%02x%02x%02x"):format(g, g, g)
+  end
+
+  ---A highlight group per distinct attribute combination, created once and
+  ---reused. Log output repeats the same handful of colors thousands of times, so
+  ---this is a few groups for a 50k-line capture rather than one per span.
+  local function sb_group(state)
+    local key = table.concat({
+      state.fg or "-", state.bg or "-",
+      state.bold and "b" or "-", state.italic and "i" or "-", state.underline and "u" or "-",
+    }, ":")
+    if sb_hl[key] then
+      return sb_hl[key]
+    end
+    local name = ("TmuxScrollback%s%d"):format(config.id:gsub("%W", ""), vim.tbl_count(sb_hl))
+    vim.api.nvim_set_hl(0, name, {
+      fg = state.fg,
+      bg = state.bg,
+      bold = state.bold or nil,
+      italic = state.italic or nil,
+      underline = state.underline or nil,
+    })
+    sb_hl[key] = name
+    return name
+  end
+
+  ---Apply one SGR parameter list to the running state. Only the subset a
+  ---terminal program actually emits is handled; anything else is ignored rather
+  ---than guessed at.
+  local function sb_apply_sgr(params, state)
+    local i = 1
+    while i <= #params do
+      local p = params[i]
+      if p == 0 then
+        state.fg, state.bg, state.bold, state.italic, state.underline = nil, nil, false, false, false
+      elseif p == 1 then
+        state.bold = true
+      elseif p == 3 then
+        state.italic = true
+      elseif p == 4 then
+        state.underline = true
+      elseif p == 22 then
+        state.bold = false
+      elseif p == 23 then
+        state.italic = false
+      elseif p == 24 then
+        state.underline = false
+      elseif p == 39 then
+        state.fg = nil
+      elseif p == 49 then
+        state.bg = nil
+      elseif p >= 30 and p <= 37 then
+        state.fg = sb_color(p - 30)
+      elseif p >= 40 and p <= 47 then
+        state.bg = sb_color(p - 40)
+      elseif p >= 90 and p <= 97 then
+        state.fg = sb_color(p - 90 + 8)
+      elseif p >= 100 and p <= 107 then
+        state.bg = sb_color(p - 100 + 8)
+      elseif p == 38 or p == 48 then
+        -- Extended color: 5;N (256-color) or 2;R;G;B (truecolor).
+        local target = p == 38 and "fg" or "bg"
+        if params[i + 1] == 5 then
+          state[target] = sb_color(params[i + 2] or 0)
+          i = i + 2
+        elseif params[i + 1] == 2 then
+          state[target] = ("#%02x%02x%02x"):format(params[i + 2] or 0, params[i + 3] or 0, params[i + 4] or 0)
+          i = i + 4
+        end
+      end
+      i = i + 1
+    end
+  end
+
+  ---Strip SGR sequences out of raw capture lines, returning clean text plus the
+  ---extmarks that reproduce the colors.
+  ---
+  ---Attribute state carries ACROSS lines, exactly as it does in a terminal: a
+  ---program that sets a color and prints ten lines before resetting emits the
+  ---escape once, so resetting per line would color only the first.
+  ---@param raw string[]
+  ---@return string[] text, table[] marks
+  local function sb_parse(raw)
+    local text, marks = {}, {}
+    local state = { bold = false, italic = false, underline = false }
+    local function styled()
+      return state.fg or state.bg or state.bold or state.italic or state.underline
+    end
+    local lnum, col, open_col, open_group
+    local function close_span()
+      if open_col and open_group and col > open_col then
+        marks[#marks + 1] = { lnum - 1, open_col, col, open_group }
+      end
+      open_col, open_group = nil, nil
+    end
+    for i, line in ipairs(raw) do
+      lnum, col = i, 0
+      local clean, pos = {}, 1
+      -- Reopen whatever was still in effect at the end of the previous line, so
+      -- multi-line colored output stays colored the whole way down.
+      open_col, open_group = nil, nil
+      if styled() then
+        open_col, open_group = 0, sb_group(state)
+      end
+      while true do
+        local s, e, params = line:find("\27%[([%d;]*)m", pos)
+        if not s then
+          break
+        end
+        local chunk = line:sub(pos, s - 1)
+        clean[#clean + 1] = chunk
+        col = col + #chunk
+        close_span()
+        local nums = {}
+        for n in (params == "" and "0" or params):gmatch("%d+") do
+          nums[#nums + 1] = tonumber(n)
+        end
+        sb_apply_sgr(nums, state)
+        if styled() then
+          open_col, open_group = col, sb_group(state)
+        end
+        pos = e + 1
+      end
+      local tail = line:sub(pos)
+      clean[#clean + 1] = tail
+      col = col + #tail
+      close_span()
+      -- Any other escape (cursor moves, OSC titles) would render as junk.
+      text[#text + 1] = (table.concat(clean):gsub("\27%[[%d;?]*[A-Za-z]", ""):gsub("\27%][^\7\27]*[\7\27]?", ""))
+    end
+    return text, marks
+  end
+
+  function W.scrollback()
+    local win = nil
+    if attached and vim.api.nvim_buf_is_valid(attached.buf) then
+      for _, w in ipairs(vim.api.nvim_list_wins()) do
+        if vim.api.nvim_win_is_valid(w) and vim.api.nvim_win_get_buf(w) == attached.buf then
+          win = w
+          break
+        end
+      end
+    end
+    if not win then
+      vim.notify(config.missing_msg, vim.log.levels.WARN)
+      return
+    end
+    local term_buf = attached.buf
+
+    -- -J unwraps lines the pane had folded to its width, so a long command or
+    -- a URL comes back as one yankable line instead of screen-width fragments.
+    -- -e keeps the SGR sequences; sb_parse turns them into real highlights, so
+    -- the scrollback looks like the pane it came from instead of a wall of
+    -- colorless text where every log level reads the same.
+    local raw = vim.fn.systemlist({
+      "tmux",
+      "capture-pane",
+      "-p",
+      "-e",
+      "-J",
+      "-S",
+      "-50000",
+      "-t",
+      my_session(),
+    })
+    if vim.v.shell_error ~= 0 then
+      vim.notify("tmux: could not capture scrollback", vim.log.levels.WARN)
+      return
+    end
+    local lines, marks = sb_parse(raw)
+    -- capture-pane pads out to the bottom of the pane, so a mostly-empty screen
+    -- ends in a block of blank lines and the cursor would land far below the
+    -- last thing you actually ran.
+    while #lines > 0 and lines[#lines]:match("^%s*$") do
+      lines[#lines] = nil
+    end
+
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    for _, m in ipairs(marks) do
+      -- Ranges are computed against the ORIGINAL raw lines, and a capture can
+      -- always contain something the parser mismeasured (a wide glyph, a stray
+      -- escape). One bad span must not take the whole scrollback down with it.
+      pcall(vim.api.nvim_buf_set_extmark, buf, SB_NS, m[1], m[2], {
+        end_col = m[3],
+        hl_group = m[4],
+        strict = false,
+      })
+    end
+    vim.bo[buf].modifiable = false
+    vim.bo[buf].modified = false
+    vim.bo[buf].buftype = "nofile"
+    vim.bo[buf].bufhidden = "wipe"
+    vim.bo[buf].swapfile = false
+    vim.api.nvim_buf_set_name(buf, ("%s://scrollback/%d"):format(config.id, buf))
+
+    -- A SECOND float on top, rather than swapping this buffer into the existing
+    -- one. The float belongs to snacks.win, whose `fixbuf` autocmd (BufWinEnter
+    -- on "*") exists precisely to keep foreign buffers out of it: it puts its
+    -- own terminal buffer back and re-homes the intruder into the main window.
+    -- Combined with bufhidden=wipe that self-destructed -- the restore wiped
+    -- this buffer as the last window stopped showing it, and snacks then threw
+    -- "Invalid buffer id" re-homing a buffer that no longer existed.
+    --
+    -- Copying the geometry lands it exactly over the terminal float, so it still
+    -- reads as the same window changing mode. zindex+1 keeps it on top.
+    local cfg = vim.api.nvim_win_get_config(win)
+    cfg.zindex = (cfg.zindex or 50) + 1
+    -- No title of its own: a title changes what the top border row draws, which
+    -- made this read as a second, slightly-off window sitting inside the float
+    -- instead of the float itself. The winbar below is the honest place to say
+    -- where you are, and copying the terminal's keeps the tab pills on screen
+    -- AND keeps the text starting on the same row -- without it every line sits
+    -- one row higher than the terminal underneath and the whole thing looks
+    -- shifted.
+    vim.cmd("stopinsert")
+    local sb_win = vim.api.nvim_open_win(buf, true, cfg)
+    vim.wo[sb_win].winbar = vim.wo[win].winbar
+    vim.wo[sb_win].winblend = 0
+    vim.wo[sb_win].number = false
+    vim.wo[sb_win].relativenumber = false
+    vim.wo[sb_win].signcolumn = "no"
+    vim.wo[sb_win].list = false
+    vim.wo[sb_win].wrap = false
+    vim.wo[sb_win].cursorline = false
+
+    local function restore()
+      if vim.api.nvim_win_is_valid(sb_win) then
+        vim.api.nvim_win_close(sb_win, true)
+      end
+      if vim.api.nvim_win_is_valid(win) and vim.api.nvim_buf_is_valid(term_buf) then
+        vim.api.nvim_set_current_win(win)
+        -- Terminal buffers land in normal mode; without this you are left
+        -- looking at the shell unable to type into it.
+        vim.cmd("startinsert")
+      end
+    end
+    -- i/a/A/I/o/O/c/s are how you leave normal mode everywhere else in Neovim,
+    -- and the muscle memory does not stop at the edge of the float -- so here
+    -- they mean "back to typing at the prompt", which is the terminal. Without
+    -- them they hit a nomodifiable scratch buffer and all you get is E21.
+    for _, key in ipairs({ "q", "<Esc>", "<C-g>", "i", "a", "A", "I", "o", "O", "c", "s" }) do
+      vim.keymap.set("n", key, restore, { buffer = buf, desc = "Workspace: back to the live terminal" })
+    end
+
+    -- Land where the pane was: the newest output at the bottom of the window,
+    -- the same view you were just looking at, with the history above you.
+    vim.api.nvim_win_set_cursor(sb_win, { math.max(#lines, 1), 0 })
+    vim.api.nvim_win_call(sb_win, function()
+      vim.cmd("normal! zb")
+    end)
   end
 
   ---Where a new pane should start -- deliberately dependent on WHERE you
