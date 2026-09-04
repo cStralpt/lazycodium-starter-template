@@ -211,6 +211,9 @@ function M.focus(agent)
   -- Selecting the window on the canonical session is harmless -- nothing is
   -- attached to it -- and select-pane below sets the WINDOW's active pane,
   -- which every grouped session shares, so the send target moves for everyone.
+  -- Focus deliberately never OPENS the float, but if a scrollback snapshot is
+  -- up it must not be left showing the agent you just focused away from.
+  ws.dismiss_scrollback()
   vim.fn.system({ "tmux", "select-window", "-t", ws.view_session() .. ":" .. agent.group })
   vim.fn.system({ "tmux", "select-pane", "-t", agent.pane })
   ws.refresh_indicator()

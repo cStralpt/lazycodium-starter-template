@@ -473,6 +473,10 @@ function M.new(config)
     end
   end
 
+  ---Exposed for callers that must drive tmux directly and so cannot go through
+  ---tmux() -- claude_agents.focus resolves a pane id and selects it by hand.
+  W.dismiss_scrollback = sb_dismiss
+
   local function tmux(args)
     -- Every layout-changing action routes through here (split, new-window,
     -- next/previous-window, resize-pane -Z, kill-pane), so this one line covers
