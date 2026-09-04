@@ -1011,6 +1011,7 @@ function M.new(config)
     local key = table.concat({
       state.fg or "-", state.bg or "-",
       state.bold and "b" or "-", state.italic and "i" or "-", state.underline and "u" or "-",
+      state.reverse and "r" or "-", state.strike and "s" or "-",
     }, ":")
     if sb_hl[key] then
       return sb_hl[key]
@@ -1022,6 +1023,11 @@ function M.new(config)
       bold = state.bold or nil,
       italic = state.italic or nil,
       underline = state.underline or nil,
+      -- Neovim swaps fg/bg at render time and falls back to the window's Normal
+      -- for whichever side is unset, which is exactly what a terminal does --
+      -- so this needs no colors of its own.
+      reverse = state.reverse or nil,
+      strikethrough = state.strike or nil,
     })
     sb_hl[key] = name
     return name
@@ -1036,18 +1042,31 @@ function M.new(config)
       local p = params[i]
       if p == 0 then
         state.fg, state.bg, state.bold, state.italic, state.underline = nil, nil, false, false, false
+        state.reverse, state.strike = false, false
       elseif p == 1 then
         state.bold = true
       elseif p == 3 then
         state.italic = true
       elseif p == 4 then
         state.underline = true
+      elseif p == 7 then
+        -- Reverse video. Dropping it was a real hole, not a cosmetic one: it is
+        -- how TUIs draw selections, status bars and ls's directory highlighting,
+        -- and ignored it renders as ordinary default-on-default text, so the
+        -- emphasis vanished completely.
+        state.reverse = true
+      elseif p == 9 then
+        state.strike = true
       elseif p == 22 then
         state.bold = false
       elseif p == 23 then
         state.italic = false
       elseif p == 24 then
         state.underline = false
+      elseif p == 27 then
+        state.reverse = false
+      elseif p == 29 then
+        state.strike = false
       elseif p == 39 then
         state.fg = nil
       elseif p == 49 then
@@ -1085,9 +1104,10 @@ function M.new(config)
   ---@return string[] text, table[] marks
   local function sb_parse(raw)
     local text, marks = {}, {}
-    local state = { bold = false, italic = false, underline = false }
+    local state = { bold = false, italic = false, underline = false, reverse = false, strike = false }
     local function styled()
       return state.fg or state.bg or state.bold or state.italic or state.underline
+        or state.reverse or state.strike
     end
     local lnum, col, open_col, open_group
     local function close_span()
@@ -1247,6 +1267,12 @@ function M.new(config)
       cfg = vim.api.nvim_win_get_config(win)
       cfg.zindex = (cfg.zindex or 50) + 1
     end
+    -- NOTE the scrollback reads slightly differently from the live terminal, and
+    -- that is kept ON PURPOSE. Text with no SGR of its own gets no extmark, so
+    -- it takes the float's NormalFloat, while the terminal paints default text
+    -- from Normal and g:terminal_color_*. It started as a side effect, but it
+    -- makes "am I in the snapshot or the live pane?" answerable at a glance, so
+    -- it stays -- don't "fix" it by forcing Normal onto this window.
     vim.cmd("stopinsert")
     local sb_win = vim.api.nvim_open_win(buf, true, cfg)
     vim.wo[sb_win].winblend = 0
