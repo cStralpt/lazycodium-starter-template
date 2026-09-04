@@ -450,7 +450,34 @@ function M.new(config)
   ---you to press <leader>ac at a workspace that was right there.
   ---@param args string[] e.g. { "split-window", "-h" }
   ---@return boolean ok
+
+  ---Set by W.scrollback() while its snapshot float is up; calling it puts the
+  ---live terminal back. Per workspace instance, like everything else in this
+  ---closure -- the terminal float and the Claude workspace each get their own.
+  local sb_active = nil
+
+  ---Drop the scrollback snapshot, if one is up, BEFORE doing something that
+  ---changes what the pane looks like.
+  ---
+  ---The snapshot is exactly that -- a still image of the pane, captured once.
+  ---Every action here still worked while it was on screen (they drive tmux, not
+  ---the buffer), so splitting a pane really did split it and you saw nothing
+  ---change: the float was showing the capture from before the split. Pressing
+  ---the key again split it again. That is the "spam <leader>ts, then <C-g> and
+  ---find six panes" bug -- the actions were never broken, they were invisible.
+  local function sb_dismiss()
+    local restore = sb_active
+    sb_active = nil
+    if restore then
+      restore()
+    end
+  end
+
   local function tmux(args)
+    -- Every layout-changing action routes through here (split, new-window,
+    -- next/previous-window, resize-pane -Z, kill-pane), so this one line covers
+    -- all of them and any added later.
+    sb_dismiss()
     local function run()
       local full = { "tmux", args[1], "-t", my_session() }
       for i = 2, #args do
@@ -541,6 +568,7 @@ function M.new(config)
   ---capturing a target, since the click syntax can only name a global.
   ---@param minwid integer the tmux window index, passed as the click item's minwid
   _G[CLICK_FN] = function(minwid)
+    sb_dismiss()
     local target = my_session()
     if session_alive(target) then
       vim.fn.system({ "tmux", "select-window", "-t", target .. ":" .. minwid })
@@ -851,6 +879,7 @@ function M.new(config)
   ---Snacks.terminal.focus's own behaviour -- it hides when the CURRENT buffer
   ---is the terminal's, and shows otherwise.
   function W.toggle()
+    sb_dismiss()
     local target = ensure_session()
     close_stale_float(target)
     local cmd_argv, opts = float_spec(target)
@@ -886,6 +915,7 @@ function M.new(config)
       vim.notify(config.elsewhere_msg or "Workspace is already open in another Neovim window")
       return
     end
+    sb_dismiss()
     local target = ensure_session()
     close_stale_float(target)
     local cmd_argv, opts = float_spec(target)
@@ -1173,18 +1203,48 @@ function M.new(config)
     --
     -- Copying the geometry lands it exactly over the terminal float, so it still
     -- reads as the same window changing mode. zindex+1 keeps it on top.
-    local cfg = vim.api.nvim_win_get_config(win)
-    cfg.zindex = (cfg.zindex or 50) + 1
-    -- No title of its own: a title changes what the top border row draws, which
-    -- made this read as a second, slightly-off window sitting inside the float
-    -- instead of the float itself. The winbar below is the honest place to say
-    -- where you are, and copying the terminal's keeps the tab pills on screen
-    -- AND keeps the text starting on the same row -- without it every line sits
-    -- one row higher than the terminal underneath and the whole thing looks
-    -- shifted.
+    -- Sized to the ACTIVE PANE, not the whole float.
+    --
+    -- tmux keeps scrollback per pane, so a capture is one pane's history and
+    -- nothing else's. Drawn over the entire float it read as the workspace
+    -- having collapsed back to a single terminal -- splits gone, other panes
+    -- gone -- when all that had happened was one pane changing mode. Covering
+    -- only that pane's rectangle leaves its neighbours on screen, untouched and
+    -- still live, which is what actually happened.
+    --
+    -- relative="win" measures from the parent's TEXT AREA, so the winbar and
+    -- border are already accounted for and tmux's pane coordinates -- which
+    -- start at the same origin -- drop straight in with no arithmetic.
+    local geom = vim.fn.systemlist({
+      "tmux",
+      "display-message",
+      "-p",
+      "-t",
+      my_session(),
+      "#{pane_left} #{pane_top} #{pane_width} #{pane_height}",
+    })
+    local left, top, width, height = (geom[1] or ""):match("^(%d+) (%d+) (%d+) (%d+)$")
+    local cfg
+    if left then
+      cfg = {
+        relative = "win",
+        win = win,
+        row = tonumber(top),
+        col = tonumber(left),
+        width = math.max(tonumber(width), 1),
+        height = math.max(tonumber(height), 1),
+        style = "minimal",
+        border = "none",
+        zindex = (vim.api.nvim_win_get_config(win).zindex or 50) + 1,
+      }
+    else
+      -- Geometry unavailable (a tmux hiccup): cover the float rather than not
+      -- opening at all -- the history is still the thing you asked for.
+      cfg = vim.api.nvim_win_get_config(win)
+      cfg.zindex = (cfg.zindex or 50) + 1
+    end
     vim.cmd("stopinsert")
     local sb_win = vim.api.nvim_open_win(buf, true, cfg)
-    vim.wo[sb_win].winbar = vim.wo[win].winbar
     vim.wo[sb_win].winblend = 0
     vim.wo[sb_win].number = false
     vim.wo[sb_win].relativenumber = false
@@ -1194,6 +1254,9 @@ function M.new(config)
     vim.wo[sb_win].cursorline = false
 
     local function restore()
+      -- Cleared unconditionally: whether you left via q or an action dismissed
+      -- the snapshot for you, it is gone and sb_dismiss() must not run it twice.
+      sb_active = nil
       if vim.api.nvim_win_is_valid(sb_win) then
         vim.api.nvim_win_close(sb_win, true)
       end
@@ -1211,6 +1274,8 @@ function M.new(config)
     for _, key in ipairs({ "q", "<Esc>", "<C-g>", "i", "a", "A", "I", "o", "O", "c", "s" }) do
       vim.keymap.set("n", key, restore, { buffer = buf, desc = "Workspace: back to the live terminal" })
     end
+
+    sb_active = restore
 
     -- Land where the pane was: the newest output at the bottom of the window,
     -- the same view you were just looking at, with the history above you.
