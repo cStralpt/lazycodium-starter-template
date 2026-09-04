@@ -1790,7 +1790,17 @@ function M.new(config)
   ---for every Neovim on the machine, so say so rather than doing it quietly.
   ---@return boolean quit whether there was anything to tear down
   function W.quit_workspace()
+    -- Only meaningful in normal mode; guards against a stray "i" being left
+    -- pending from the float we are tearing down.
+    local function leave_insert()
+      if vim.fn.mode() ~= "n" then
+        vim.cmd("stopinsert")
+      end
+    end
+    -- sb_dismiss puts the live terminal back and starts insert on the way; we
+    -- are about to kill that terminal, so undo the insert half immediately too.
     sb_dismiss()
+    leave_insert()
     local canonical = canonical_session()
     if not session_alive(canonical) then
       return false
@@ -1809,13 +1819,15 @@ function M.new(config)
       end
     end
 
-    if attached and vim.api.nvim_buf_is_valid(attached.buf) then
-      -- Ends this window's `tmux attach` client. The session is killed below;
-      -- deleting the buffer alone would only detach.
-      vim.api.nvim_buf_delete(attached.buf, { force = true })
-    end
+    local buf = attached and attached.buf
     attached = nil
 
+    -- Kill the SESSIONS first, then let the float's `tmux attach` notice and
+    -- exit on its own. Deleting the buffer first force-kills that job, which
+    -- Snacks reports as "Terminal exited with code -1. Check for any errors."
+    -- -- an error message for the perfectly ordinary act of closing the
+    -- workspace on purpose. An attach whose session is killed under it exits 0
+    -- (verified), so nothing complains.
     for name in pairs(owned_sessions) do
       if session_alive(name) then
         vim.fn.system({ "tmux", "kill-session", "-t", name })
@@ -1824,6 +1836,19 @@ function M.new(config)
     end
     vim.fn.system({ "tmux", "kill-session", "-t", canonical })
     alive_cache[canonical] = nil
+
+    -- The job exits asynchronously, so give it a moment and only clean up what
+    -- it left behind. Normally the buffer is already gone by now.
+    vim.defer_fn(function()
+      if buf and vim.api.nvim_buf_is_valid(buf) then
+        vim.api.nvim_buf_delete(buf, { force = true })
+      end
+      -- The float was in terminal-INSERT mode, and closing it hands focus to
+      -- whatever editor window was behind -- still in insert. Landing in insert
+      -- mode in a code buffer you did not mean to type into is how you get a
+      -- stray character in a file.
+      leave_insert()
+    end, 120)
 
     if marker_set then
       vim.fn.system({ "tmux", "set-option", "-gu", viewer_option() })
