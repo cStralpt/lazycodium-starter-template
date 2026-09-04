@@ -86,8 +86,13 @@ end, { desc = "Exit terminal mode (scrollback in a workspace float)" })
 -- while state (running processes, scrollback) survives hiding/reshowing
 -- untouched.
 local floating_term = require("util.floating_term")
-map({ "n", "t" }, "<C-/>", floating_term.toggle, { desc = "Terminal (floating, tmux)" })
-map({ "n", "t" }, "<C-_>", floating_term.toggle, { desc = "which_key_ignore" })
+--
+-- Guarded like every other workspace key: from inside the Claude float this
+-- would open the terminal float ON TOP of it, which is the same cross-workspace
+-- action <leader>ao was. You are never stuck -- a float's own toggle always
+-- works from inside it, so <leader>ac closes Claude and then <C-/> is free.
+map({ "n", "t" }, "<C-/>", floating_term.guard(floating_term.toggle, "<C-/>"), { desc = "Terminal (floating, tmux)" })
+map({ "n", "t" }, "<C-_>", floating_term.guard(floating_term.toggle, "<C-_>"), { desc = "which_key_ignore" })
 
 -- These are normal-mode only (not "t"): <leader> is space, which you type
 -- constantly inside a shell, so mapping it in terminal-insert mode would
@@ -124,7 +129,7 @@ map("n", "<leader>t[", floating_term.guard(floating_term.prev_tab, "<leader>t[")
 local agents = require("util.claude_agents")
 local marks = require("util.send_marks")
 
-map("n", "<leader>ac", agents.toggle, { desc = "Claude: toggle workspace" })
+map("n", "<leader>ac", agents.guard(agents.toggle, "<leader>ac"), { desc = "Claude: toggle workspace" })
 map("n", "<leader>an", agents.guard(agents.new_group, "<leader>an"), { desc = "Claude: new group (claude tab)" })
 map("n", "<leader>ao", agents.guard(agents.split_below, "<leader>ao"), { desc = "Claude: another agent below" })
 map("n", "<leader>aV", agents.guard(agents.split_right, "<leader>aV"), { desc = "Claude: another agent right" })
