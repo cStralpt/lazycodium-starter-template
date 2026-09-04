@@ -95,6 +95,30 @@ function M.focused()
   return focused_workspace()
 end
 
+---The workspace <leader>qq should act on: the one you are IN, or failing that
+---the one you can SEE.
+---
+---Deliberately looser than M.focused(). The floats are near-fullscreen, so if
+---one is on screen it is what you are looking at and what "close this" means --
+---even when the cursor is technically in a code window behind it. Quitting
+---Neovim out from under a visible workspace, leaving its whole tmux session
+---running, is never what was meant.
+---
+---The keymap GUARDS stay strictly focus-based: <leader>ts typed in the editor
+---must keep working while the Claude float happens to be visible.
+function M.on_screen()
+  local focused = focused_workspace()
+  if focused then
+    return focused
+  end
+  for _, inst in ipairs(instances) do
+    if inst.is_visible() then
+      return inst
+    end
+  end
+  return nil
+end
+
 ---@param config TmuxWorkspaceConfig
 function M.new(config)
   local W = {}
@@ -786,6 +810,12 @@ function M.new(config)
       end
     end
     return false
+  end
+
+  ---Is this workspace's float on screen in THIS Neovim right now, wherever the
+  ---cursor happens to be?
+  function W.is_visible()
+    return float_visible()
   end
 
   ---Publish (or retract) this instance's marker. Cheap when nothing changed:

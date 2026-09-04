@@ -115,8 +115,13 @@ map("n", "<leader>t[", floating_term.guard(floating_term.prev_tab, "<leader>t[")
 -- your back. Inside a workspace it now tears that workspace down instead; in an
 -- ordinary buffer it still quits Neovim, so the editor keeps the binding you
 -- already know and the floats layer their own meaning on top of it.
+--
+-- "Looking at" means VISIBLE, not focused. The floats are near-fullscreen, so
+-- one being on screen is enough -- quitting the editor out from under a
+-- workspace you can see, and leaving its whole tmux session running, is never
+-- what the key meant. Close the float first (<C-/> / <leader>ac) to quit Neovim.
 map("n", "<leader>qq", function()
-  local ws = require("util.tmux_workspace").focused()
+  local ws = require("util.tmux_workspace").on_screen()
   if ws and ws.quit_workspace() then
     return
   end
