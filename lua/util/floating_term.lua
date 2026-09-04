@@ -19,6 +19,7 @@ end
 
 return require("util.tmux_workspace").new({
   id = "FloatingTerm",
+  what = "terminal float",
   local_prefix = "nvim-float",
   root_prefix = "floatterm",
   cmd = fish,

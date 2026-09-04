@@ -41,8 +41,28 @@ local rainbow = require("util.rainbow_tabs")
 
 local M = {}
 
+---Every workspace built by M.new, so one instance can ask which workspace the
+---cursor is actually sitting in. The two workspaces are separate tmux sessions
+---but ONE set of global keymaps, so without this <leader>ao inside the terminal
+---float happily added a Claude agent, and <leader>ts inside the Claude float
+---split the terminal -- each acting on a workspace you were not looking at, and
+---silently, since the float you were staring at never changed.
+local instances = {}
+
+---The workspace whose buffer is focused right now, or nil in an ordinary buffer.
+local function focused_workspace()
+  local buf = vim.api.nvim_get_current_buf()
+  for _, inst in ipairs(instances) do
+    if inst.owns_buf(buf) then
+      return inst
+    end
+  end
+  return nil
+end
+
 ---@class TmuxWorkspaceConfig
 ---@field id string unique, used to name this instance's global winbar/click functions
+---@field what string? human name for this workspace, used in the cross-workspace keymap warning
 ---@field local_prefix string session name prefix used outside collaboration (suffixed with pid)
 ---@field root_prefix string session name prefix used while collaborating (suffixed with the root port)
 ---@field cmd string|fun():string command new sessions/windows/panes run
@@ -74,6 +94,13 @@ function M.new(config)
 
   local function cmd()
     return type(config.cmd) == "function" and config.cmd() or config.cmd
+  end
+
+  ---Make bare `new-window`/`split-window` in ONE session run this workspace's
+  ---command, without touching any other session on the server.
+  local function set_session_shell(session)
+    vim.fn.system({ "tmux", "set-option", "-t", session, "default-shell", cmd() })
+    vim.fn.system({ "tmux", "set-option", "-t", session, "default-command", cmd() })
   end
 
   ---The session name used before collaboration is involved: one workspace per
@@ -307,17 +334,17 @@ function M.new(config)
     if not session_alive(canonical) then
       vim.fn.system({ "tmux", "new-session", "-d", "-s", canonical, "-c", LazyVim.root(), cmd() })
       if config.set_global_shell then
-        -- -g (global, not -t canonical): a session-scoped option set on the
-        -- canonical session does NOT propagate to a grouped session (verified
-        -- directly -- new-window run against a grouped "mine" session fell
-        -- back to bash), so a new-tab from a collaborator's own grouped
-        -- session would silently miss it. Global only affects panes/windows
-        -- created WITHOUT an explicit command, so it can't clobber
-        -- shared_terminal.lua's own sessions (those always pass an explicit
-        -- cmd) -- nor the Claude workspace, whose every window and pane passes
-        -- `claude` explicitly for exactly this reason.
-        vim.fn.system({ "tmux", "set-option", "-g", "default-shell", cmd() })
-        vim.fn.system({ "tmux", "set-option", "-g", "default-command", cmd() })
+        -- Scoped to THIS session, not -g.
+        --
+        -- It used to be global because a session option set on the canonical
+        -- session does not propagate to a grouped one -- true, and the reason
+        -- a new-tab from a grouped session fell back to bash. The answer is to
+        -- set it on BOTH (ensure_session does the grouped half), not to make it
+        -- server-wide: global reached every session on the box, including the
+        -- Claude workspace, so its windows were spawned through fish and came
+        -- back named "fish" instead of "claude" -- a terminal-float setting
+        -- quietly rewriting how the OTHER workspace starts its agents.
+        set_session_shell(canonical)
       end
       -- Without an explicit "default" background, tmux paints every unstyled
       -- cell (window, status bar, pane borders) a hardcoded black rather than
@@ -421,6 +448,12 @@ function M.new(config)
       if not session_alive(mine) then
         vim.fn.system({ "tmux", "new-session", "-d", "-s", mine, "-t", canonical })
       end
+      -- The grouped half: session options do not follow a session group, and
+      -- new-window/split-window run against THIS session, so without it a new
+      -- tab here falls back to the login shell.
+      if config.set_global_shell then
+        set_session_shell(mine)
+      end
       owned_sessions[mine] = true
     end
     return mine
@@ -476,6 +509,46 @@ function M.new(config)
   ---Exposed for callers that must drive tmux directly and so cannot go through
   ---tmux() -- claude_agents.focus resolves a pane id and selects it by hand.
   W.dismiss_scrollback = sb_dismiss
+
+  ---Set while a scrollback snapshot is open, so that buffer counts as being
+  ---"in" this workspace too -- <leader>t* is normal-mode only and the snapshot
+  ---is where you reach it from, so ownership has to follow it there.
+  local sb_buf = nil
+
+  ---Is this buffer part of THIS workspace -- its terminal, or its scrollback?
+  ---@param buf integer
+  function W.owns_buf(buf)
+    if attached and vim.api.nvim_buf_is_valid(attached.buf) and buf == attached.buf then
+      return true
+    end
+    return sb_buf ~= nil and buf == sb_buf
+  end
+
+  ---Wrap an action so it refuses to run from inside the OTHER workspace.
+  ---
+  ---Refuses rather than redirects: the action is not wrong, the place you
+  ---pressed it is, and doing it silently is how you end up with agents and
+  ---panes in a workspace you were not looking at.
+  ---@param fn function
+  ---@param label string what the key would have done, for the warning
+  function W.guard(fn, label)
+    return function(...)
+      local here = focused_workspace()
+      if here and here ~= W then
+        vim.notify(
+          ("%s is a %s keymap -- you are in the %s"):format(label, config.what or config.id, here.what()),
+          vim.log.levels.WARN
+        )
+        return
+      end
+      return fn(...)
+    end
+  end
+
+  ---Human name for this workspace, used in the warnings above.
+  function W.what()
+    return config.what or config.id
+  end
 
   local function tmux(args)
     -- Every layout-changing action routes through here (split, new-window,
@@ -1287,6 +1360,7 @@ function M.new(config)
       -- Cleared unconditionally: whether you left via q or an action dismissed
       -- the snapshot for you, it is gone and sb_dismiss() must not run it twice.
       sb_active = nil
+      sb_buf = nil
       if vim.api.nvim_win_is_valid(sb_win) then
         vim.api.nvim_win_close(sb_win, true)
       end
@@ -1306,6 +1380,7 @@ function M.new(config)
     end
 
     sb_active = restore
+    sb_buf = buf
 
     -- Land where the pane was: the newest output at the bottom of the window,
     -- the same view you were just looking at, with the history above you.
@@ -1684,6 +1759,7 @@ function M.new(config)
     end,
   })
 
+  instances[#instances + 1] = W
   return W
 end
 

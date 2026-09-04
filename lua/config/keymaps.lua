@@ -93,15 +93,15 @@ map({ "n", "t" }, "<C-_>", floating_term.toggle, { desc = "which_key_ignore" })
 -- constantly inside a shell, so mapping it in terminal-insert mode would
 -- break normal typing. Drop into terminal-normal mode first (<C-g>, mapped
 -- above) to reach them while the floating terminal is focused.
-map("n", "<leader>ts", floating_term.split_horizontal, { desc = "Terminal: split pane (horizontal)" })
-map("n", "<leader>tv", floating_term.split_vertical, { desc = "Terminal: split pane (vertical)" })
-map("n", "<leader>tn", floating_term.new_tab, { desc = "Terminal: new tab (terminal group)" })
-map("n", "<leader>tx", floating_term.close_pane, { desc = "Terminal: close pane" })
+map("n", "<leader>ts", floating_term.guard(floating_term.split_horizontal, "<leader>ts"), { desc = "Terminal: split pane (horizontal)" })
+map("n", "<leader>tv", floating_term.guard(floating_term.split_vertical, "<leader>tv"), { desc = "Terminal: split pane (vertical)" })
+map("n", "<leader>tn", floating_term.guard(floating_term.new_tab, "<leader>tn"), { desc = "Terminal: new tab (terminal group)" })
+map("n", "<leader>tx", floating_term.guard(floating_term.close_pane, "<leader>tx"), { desc = "Terminal: close pane" })
 -- Not ]t/[t: LazyVim already claims those for todo-comments.nvim, and the
 -- `map()` wrapper above silently skips ours whenever a lazy-loaded plugin
 -- keymap already owns the lhs -- so ]t/[t would appear to do nothing.
-map("n", "<leader>t]", floating_term.next_tab, { desc = "Terminal: next tab" })
-map("n", "<leader>t[", floating_term.prev_tab, { desc = "Terminal: prev tab" })
+map("n", "<leader>t]", floating_term.guard(floating_term.next_tab, "<leader>t]"), { desc = "Terminal: next tab" })
+map("n", "<leader>t[", floating_term.guard(floating_term.prev_tab, "<leader>t["), { desc = "Terminal: prev tab" })
 
 -- The Claude workspace: N Claudes as tmux panes, in groups (util/claude_agents
 -- .lua). Mapped EAGERLY here, not as lazy `keys` on coder/claudecode.nvim,
@@ -125,13 +125,13 @@ local agents = require("util.claude_agents")
 local marks = require("util.send_marks")
 
 map("n", "<leader>ac", agents.toggle, { desc = "Claude: toggle workspace" })
-map("n", "<leader>an", agents.new_group, { desc = "Claude: new group (claude tab)" })
-map("n", "<leader>ao", agents.split_below, { desc = "Claude: another agent below" })
-map("n", "<leader>aV", agents.split_right, { desc = "Claude: another agent right" })
-map("n", "<leader>a]", agents.next_group, { desc = "Claude: next group" })
-map("n", "<leader>a[", agents.prev_group, { desc = "Claude: prev group" })
-map("n", "<leader>ax", agents.close_agent, { desc = "Claude: close this agent" })
-map("n", "<leader>az", agents.zoom, { desc = "Claude: show only this agent" })
+map("n", "<leader>an", agents.guard(agents.new_group, "<leader>an"), { desc = "Claude: new group (claude tab)" })
+map("n", "<leader>ao", agents.guard(agents.split_below, "<leader>ao"), { desc = "Claude: another agent below" })
+map("n", "<leader>aV", agents.guard(agents.split_right, "<leader>aV"), { desc = "Claude: another agent right" })
+map("n", "<leader>a]", agents.guard(agents.next_group, "<leader>a]"), { desc = "Claude: next group" })
+map("n", "<leader>a[", agents.guard(agents.prev_group, "<leader>a["), { desc = "Claude: prev group" })
+map("n", "<leader>ax", agents.guard(agents.close_agent, "<leader>ax"), { desc = "Claude: close this agent" })
+map("n", "<leader>az", agents.guard(agents.zoom, "<leader>az"), { desc = "Claude: show only this agent" })
 -- Counted, this skips the picker AND the float entirely: `3<leader>af` just
 -- retargets where the next send lands, read off the statusline pills. Bare, it
 -- is still the picker, which does reveal -- browsing what each agent holds and

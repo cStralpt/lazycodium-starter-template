@@ -37,6 +37,7 @@ local ws = require("util.tmux_workspace").new({
   id = "ClaudeWorkspace",
   -- No pid: every Neovim on this machine shares ONE Claude workspace, so an
   -- agent started in one terminal window is a send target in all of them.
+  what = "Claude workspace",
   local_prefix = "claude-ws",
   root_prefix = "claude-ws",
   shared_local = true,
@@ -73,6 +74,7 @@ local ws = require("util.tmux_workspace").new({
 })
 
 M.workspace = ws
+M.guard = ws.guard
 
 --=============================================================================
 -- Agents = panes
