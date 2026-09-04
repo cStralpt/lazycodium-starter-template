@@ -1407,6 +1407,7 @@ function M.new(config)
       vim.notify(config.missing_msg, vim.log.levels.WARN)
       return false
     end
+    sb_dismiss()
     -- Resolve the source pane by id FIRST. "the active pane" is a moving
     -- target: join-pane changes which window is current, so a second command
     -- that re-resolves "active" would act on a different pane than the one you
@@ -1453,6 +1454,7 @@ function M.new(config)
   ---since tmux refuses to break out the only pane and the error is opaque.
   ---@return boolean moved
   function W.break_pane_to_group()
+    sb_dismiss()
     local target = my_session()
     if not session_alive(target) then
       vim.notify(config.missing_msg, vim.log.levels.WARN)
