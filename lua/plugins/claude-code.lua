@@ -21,6 +21,10 @@ local M = {
   "coder/claudecode.nvim",
   dependencies = { "folke/snacks.nvim" },
   opts = {
+    -- Every session this plugin spawns skips permission prompts, matching the
+    -- tmux workspace agents (util/claude_agents.lua). Only affects Claudes
+    -- started from Neovim.
+    terminal_cmd = "claude --dangerously-skip-permissions",
     terminal = {
       split_side = "right",
       split_width_percentage = 0.35,

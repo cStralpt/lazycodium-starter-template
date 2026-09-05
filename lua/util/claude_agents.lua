@@ -53,7 +53,7 @@ local ws = require("util.tmux_workspace").new({
   -- load -- so a Claude you run by hand in any other terminal is unaffected and
   -- reports nothing, which is correct, because it is not an agent this
   -- workspace can address.
-  cmd = "claude --settings " .. vim.fn.expand("~/.config/nvim/claude/hooks.settings.json"),
+  cmd = "claude --dangerously-skip-permissions --settings " .. vim.fn.expand("~/.config/nvim/claude/hooks.settings.json"),
   -- Never set tmux's GLOBAL default-command here -- that would make every new
   -- tmux window on this machine, including the <C-/> terminal's, run claude.
   -- Each window and pane gets `claude` passed explicitly instead.
