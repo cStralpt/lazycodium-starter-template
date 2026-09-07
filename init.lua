@@ -36,6 +36,74 @@ else
       persistence.load()
     end,
   })
+
+  -- persistence.nvim saves sessions with plain :mksession, which bakes the
+  -- DISPLAYED TEXT of any open oil:// directory-listing buffer into the
+  -- session file (it isn't backed by a real file, so mksession can't just
+  -- re-:edit it). Resuming then replays that as a dead, frozen buffer full
+  -- of stale filenames instead of a live oil listing.
+  --
+  -- Dropping those buffers is only half the job: a window still SHOWING one
+  -- would be left on the empty [No Name] buffer Neovim substitutes in. So
+  -- every such window is first pointed at a real file from the session --
+  -- distinct files while there are enough to go round, so a split layout
+  -- comes back with actual content in each pane rather than one file twice.
+  --
+  -- Runs before every save (future sessions never bake one in) and after
+  -- every load (an already-poisoned session file self-heals on open).
+  local function evict_placeholder_buffers()
+    local function is_oil(buf)
+      return vim.api.nvim_buf_get_name(buf):match("^oil://") ~= nil
+    end
+
+    -- An unnamed, unmodified, empty buffer: what a previously-poisoned
+    -- session restores into, and never something worth keeping on screen.
+    local function is_blank(buf)
+      if vim.api.nvim_buf_get_name(buf) ~= "" or vim.bo[buf].modified then
+        return false
+      end
+      local lines = vim.api.nvim_buf_get_lines(buf, 0, 2, false)
+      return #lines == 0 or (#lines == 1 and lines[1] == "")
+    end
+
+    local junk, files = {}, {}
+    for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_is_loaded(buf) then
+        if is_oil(buf) or is_blank(buf) then
+          junk[#junk + 1] = buf
+        elseif vim.bo[buf].buftype == "" and vim.api.nvim_buf_get_name(buf) ~= "" then
+          files[#files + 1] = buf
+        end
+      end
+    end
+
+    -- Nothing to clean, or nothing real to put in its place. Bailing keeps
+    -- the listing rather than trading it for an empty window.
+    if #junk == 0 or #files == 0 then
+      return
+    end
+
+    local next_file = 0
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      local buf = vim.api.nvim_win_get_buf(win)
+      if is_oil(buf) or is_blank(buf) then
+        -- Hand out a fresh file per window, reusing the last one once the
+        -- session has more windows than it has files.
+        next_file = math.min(next_file + 1, #files)
+        vim.api.nvim_win_set_buf(win, files[next_file])
+      end
+    end
+
+    for _, buf in ipairs(junk) do
+      pcall(vim.api.nvim_buf_delete, buf, { force = true })
+    end
+  end
+
+  vim.api.nvim_create_autocmd("User", {
+    pattern = { "PersistenceSavePre", "PersistenceLoadPost" },
+    group = vim.api.nvim_create_augroup("no_oil_in_sessions", { clear = true }),
+    callback = evict_placeholder_buffers,
+  })
   vim.api.nvim_command("highlight LineNr guifg=#bae67e ctermfg=149")
   vim.api.nvim_command("highlight CursorLineNr guifg=#ef6b73 ctermfg=203")
   vim.api.nvim_command("highlight CursorLine guibg=#1C1C3E")
