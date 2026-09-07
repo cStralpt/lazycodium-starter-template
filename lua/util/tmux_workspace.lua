@@ -994,6 +994,10 @@ function M.new(config)
   ---is the terminal's, and shows otherwise.
   function W.toggle()
     sb_dismiss()
+    -- Terminal-insert mode is global editor state, not scoped to the window --
+    -- hiding the float here mid-insert leaves it active, so the window that
+    -- comes back into focus (e.g. the file explorer) inherits insert mode.
+    vim.cmd("stopinsert")
     local target = ensure_session()
     close_stale_float(target)
     local cmd_argv, opts = float_spec(target)
