@@ -107,6 +107,9 @@ map("n", "<leader>tx", floating_term.guard(floating_term.close_pane, "<leader>tx
 -- keymap already owns the lhs -- so ]t/[t would appear to do nothing.
 map("n", "<leader>t]", floating_term.guard(floating_term.next_tab, "<leader>t]"), { desc = "Terminal: next tab" })
 map("n", "<leader>t[", floating_term.guard(floating_term.prev_tab, "<leader>t["), { desc = "Terminal: prev tab" })
+-- The tab picker, to <leader>t] what <leader>af is to a Claude agent: choose a
+-- tab by SEEING what it is running, rather than stepping through them blind.
+map("n", "<leader>tf", floating_term.guard(floating_term.pick_tab, "<leader>tf"), { desc = "Terminal: pick tab" })
 
 -- <leader>qq closes what you are LOOKING AT.
 --

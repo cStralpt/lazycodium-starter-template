@@ -119,6 +119,27 @@ function M.on_screen()
   return nil
 end
 
+---Hand EVERY workspace this Neovim owns to the collaborative session it has
+---just joined, while the collaborative names are still unclaimed.
+---
+---Iterating `instances` rather than naming workspaces one by one IS the fix.
+---The hand-off used to be a hardcoded
+---`require("util.floating_term").claim_workspace()` in lua/plugins/instant.lua,
+---so the Claude workspace -- built on this same factory, but added later --
+---silently never got one: <leader>iss renamed nothing, ensure_session() then
+---found the collaborative name missing and created a fresh EMPTY session, and
+---every Claude tab you had open stayed orphaned under the old pid-keyed name.
+---(It was invisible for as long as the Claude workspace was shared_local,
+---because its name did not change on <leader>iss at all -- so the wiring was
+---missing the entire time and only started to matter once it did.)
+---
+---Anything built on this factory from now on is enrolled automatically.
+function M.claim_all()
+  for _, inst in ipairs(instances) do
+    inst.claim_workspace()
+  end
+end
+
 ---@param config TmuxWorkspaceConfig
 function M.new(config)
   local W = {}
@@ -896,10 +917,41 @@ function M.new(config)
     pane_bound[buf] = true
     watch_visibility(buf)
     local dirs = { h = "-L", j = "-D", k = "-U", l = "-R" }
+    -- Where to go when there is no pane that way. Left/right only: the tab
+    -- pills sit side by side on the winbar, so h/l continuing into the
+    -- neighbouring tab reads as the same motion carried on. j/k have no such
+    -- meaning and stay pure pane navigation.
+    local tab_fallback = {
+      h = { cmd = "previous-window", edge = "#{pane_at_left}" },
+      l = { cmd = "next-window", edge = "#{pane_at_right}" },
+    }
+
+    ---Is the active pane already against the edge of its tab, this way?
+    ---
+    ---Asked UP FRONT rather than inferred from "did select-pane move me?",
+    ---because tmux's directional select-pane WRAPS: -R from the rightmost pane
+    ---jumps back to the leftmost instead of failing, so the pane always
+    ---changes and an after-the-fact test can never see an edge at all.
+    ---@param fmt string a tmux #{pane_at_*} format
+    local function at_edge(fmt)
+      local out = vim.fn.systemlist({ "tmux", "display-message", "-p", "-t", target, fmt })
+      return vim.v.shell_error == 0 and out[1] == "1"
+    end
+
     for key, flag in pairs(dirs) do
       vim.keymap.set({ "n", "t" }, "<C-" .. key .. ">", function()
+        -- At the edge, h/l carry on into the neighbouring TAB. select-pane
+        -- cannot cross tmux windows at all, which is why these keys could
+        -- never leave a tab before -- and why, in terminal mode where <leader>
+        -- is unreachable, there was no way to change tab at all.
+        local cross = tab_fallback[key]
+        if cross and at_edge(cross.edge) then
+          vim.fn.system({ "tmux", cross.cmd, "-t", target })
+          refresh_indicator()
+          return
+        end
         vim.fn.system({ "tmux", "select-pane", "-t", target, flag })
-      end, { buffer = buf, desc = "Tmux pane: move " .. key })
+      end, { buffer = buf, desc = "Tmux pane: move " .. key .. (tab_fallback[key] and " (tab at the edge)" or "") })
     end
     -- Entering the float is the one moment worth paying for an out-of-band
     -- refresh: the row you are about to look at should be current, not up to
@@ -954,6 +1006,19 @@ function M.new(config)
     -- that patch untouched, so this sidesteps it entirely -- we already handle
     -- our own collab sharing via tmux session groups.
     return { "tmux", "attach", "-t", target }, {
+      -- Snacks' `interactive` default turns auto_close ON, which closes the
+      -- whole float the moment the `tmux attach` job exits -- and <C-d> at an
+      -- idle prompt is exactly that. The float vanished with no confirmation
+      -- and focus fell through to whatever editor window was behind it, so the
+      -- next i/a typed into a source file instead of the shell. The workspace
+      -- outlives any one attach (that is the entire point of backing it with
+      -- tmux), so the window stays and you dismiss it deliberately with <C-/>.
+      --
+      -- Only auto_close is disabled: start_insert/auto_insert stay on, so
+      -- showing the float still lands you typing at the prompt. auto_close is
+      -- not part of Snacks' terminal cache key (M.tid covers cmd/cwd/env/count
+      -- only), so this cannot fragment the cache and open a second float.
+      auto_close = false,
       win = {
         position = "float",
         width = config.float.width,
@@ -993,11 +1058,22 @@ function M.new(config)
   ---Snacks.terminal.focus's own behaviour -- it hides when the CURRENT buffer
   ---is the terminal's, and shows otherwise.
   function W.toggle()
+    -- Which way this toggle is about to go, decided BEFORE sb_dismiss() moves
+    -- the cursor off the snapshot: focus() hides when the current buffer is
+    -- this workspace's, and shows otherwise.
+    local hiding = W.owns_buf(vim.api.nvim_get_current_buf())
     sb_dismiss()
     -- Terminal-insert mode is global editor state, not scoped to the window --
-    -- hiding the float here mid-insert leaves it active, so the window that
-    -- comes back into focus (e.g. the file explorer) inherits insert mode.
-    vim.cmd("stopinsert")
+    -- hiding the float mid-insert leaves it active, so the window that comes
+    -- back into focus (e.g. the file explorer) inherits insert mode.
+    --
+    -- Only on the hiding path. Showing the float is meant to land you typing
+    -- at the prompt, and that mode is set by Snacks' auto-insert and by
+    -- restore() below; stopping insert unconditionally here fought both and
+    -- left the float in whichever mode won the race.
+    if hiding then
+      vim.cmd("stopinsert")
+    end
     local target = ensure_session()
     close_stale_float(target)
     local cmd_argv, opts = float_spec(target)
@@ -1397,7 +1473,22 @@ function M.new(config)
     vim.wo[sb_win].wrap = false
     vim.wo[sb_win].cursorline = false
 
-    local function restore()
+    -- Runs at most once, however the snapshot is left: restore() below, an
+    -- action dismissing it, or walking out of the window entirely.
+    local torn_down = false
+
+    ---Take the snapshot down.
+    ---
+    ---`focus_terminal` distinguishes the two ways out. q/<Esc>/i/a MEAN "put me
+    ---back at the prompt", so they hand focus to the live pane and start
+    ---typing. Walking out with <C-h> does not -- you asked to go left, so you
+    ---go left, and the snapshot merely does not survive the trip.
+    ---@param focus_terminal boolean
+    local function teardown(focus_terminal)
+      if torn_down then
+        return
+      end
+      torn_down = true
       -- Cleared unconditionally: whether you left via q or an action dismissed
       -- the snapshot for you, it is gone and sb_dismiss() must not run it twice.
       sb_active = nil
@@ -1405,13 +1496,63 @@ function M.new(config)
       if vim.api.nvim_win_is_valid(sb_win) then
         vim.api.nvim_win_close(sb_win, true)
       end
+      if not focus_terminal then
+        return
+      end
       if vim.api.nvim_win_is_valid(win) and vim.api.nvim_buf_is_valid(term_buf) then
         vim.api.nvim_set_current_win(win)
         -- Terminal buffers land in normal mode; without this you are left
         -- looking at the shell unable to type into it.
         vim.cmd("startinsert")
+      else
+        -- The float went away while the snapshot was up -- the attach exited,
+        -- or something else closed it. This branch used to be missing, so
+        -- closing the snapshot silently left the cursor in whatever editor
+        -- window was behind the float, and the i/a that got you here then
+        -- opened insert mode on a SOURCE FILE. i/a/q meant "back to the
+        -- workspace", so put the workspace back.
+        W.show()
       end
     end
+
+    local function restore()
+      teardown(true)
+    end
+
+    -- Walking out of the snapshot any other way -- <C-hjkl> window nav, a
+    -- mouse click, :wincmd -- used to leave it FLOATING over the pane with
+    -- sb_active still set. Two things then went wrong: the stale snapshot hid
+    -- the live terminal it was covering, and the next sb_dismiss() (any
+    -- toggle, any workspace action) ran restore() long after focus had moved
+    -- on, so its startinsert opened INSERT MODE ON WHATEVER SOURCE FILE you
+    -- had walked to -- and the next keys you typed edited it.
+    --
+    -- Scheduled because closing a window from inside WinLeave is not allowed;
+    -- teardown is idempotent, so racing restore() here is harmless.
+    vim.api.nvim_create_autocmd("WinLeave", {
+      buffer = buf,
+      once = true,
+      callback = function()
+        vim.schedule(function()
+          teardown(false)
+        end)
+      end,
+    })
+
+    -- <C-hjkl> move between tmux PANES everywhere else in this float --  but
+    -- bind_pane_nav() binds them buffer-locally on the TERMINAL buffer, and
+    -- the snapshot is a different buffer, so here they fell through to
+    -- LazyVim's global window nav and walked you clean out of the float into
+    -- the editor behind it. The keys are not window navigation inside a
+    -- workspace, so bind them to what they mean: put the live pane back, then
+    -- move to the neighbour.
+    for key, flag in pairs({ h = "-L", j = "-D", k = "-U", l = "-R" }) do
+      vim.keymap.set("n", "<C-" .. key .. ">", function()
+        restore()
+        vim.fn.system({ "tmux", "select-pane", "-t", my_session(), flag })
+      end, { buffer = buf, desc = "Tmux pane: move " .. key })
+    end
+
     -- i/a/A/I/o/O/c/s are how you leave normal mode everywhere else in Neovim,
     -- and the muscle memory does not stop at the edge of the float -- so here
     -- they mean "back to typing at the prompt", which is the terminal. Without
@@ -1530,6 +1671,127 @@ function M.new(config)
       end
     end
     return groups
+  end
+
+  ---Pick a tab (tmux window) from a list, the way <leader>af picks a Claude
+  ---agent -- same Snacks.picker shape, same vim.ui.select fallback, and rows
+  ---carrying the pill's OWN accent so the row you choose matches the pill you
+  ---were looking at on the winbar.
+  ---
+  ---This exists because neither existing way of moving between tabs lets you
+  ---choose by CONTENT. <C-hjkl> is pane navigation -- tmux's select-pane
+  ---cannot cross windows, so it never reached another tab and was never going
+  ---to. [ / ] do cross, but blindly: you step through tabs looking for the one
+  ---running the thing you want. The preview here is the tab's live pane, so
+  ---you pick the dev server by seeing the dev server.
+  function W.pick_tab()
+    sb_dismiss()
+    -- view_session(), not my_session(): it falls back to the canonical session
+    -- when this instance's own view is gone, which is the same thing
+    -- list_groups() reads. Listing, previewing and selecting must all agree on
+    -- WHICH session, or you would pick a row from one and switch in another.
+    local target = view_session()
+    local groups = W.list_groups()
+    if #groups == 0 then
+      vim.notify(config.missing_msg, vim.log.levels.WARN)
+      return
+    end
+
+    ---Live content of a tab's active pane -- the preview, and the summary line.
+    local function tab_text(index)
+      local out = vim.fn.systemlist({ "tmux", "capture-pane", "-p", "-t", target .. ":" .. index })
+      if vim.v.shell_error ~= 0 then
+        return { "(could not capture this tab)" }
+      end
+      return out
+    end
+
+    local items = {}
+    for _, g in ipairs(groups) do
+      local lines = tab_text(g.index)
+      -- The last non-empty line: the newest thing that tab has to say, which is
+      -- what you are actually scanning for. A blank tail is common (a prompt
+      -- sitting below its output), so this walks back rather than taking #lines.
+      local summary = ""
+      for i = #lines, 1, -1 do
+        if lines[i]:match("%S") then
+          summary = vim.trim(lines[i])
+          break
+        end
+      end
+      items[#items + 1] = {
+        index = g.index,
+        active = g.active,
+        panes = g.panes,
+        hl = rainbow.chip_hls(g.index, g.active).content,
+        summary = summary,
+        lines = lines,
+        -- What fuzzy matching searches: the index AND what the tab is holding,
+        -- so typing "expo" finds the tab running expo.
+        text = ("%d %s"):format(g.index, summary),
+      }
+    end
+
+    local function panes_label(n)
+      return ("%d pane%s"):format(n, n == 1 and "" or "s")
+    end
+
+    local function choose(item)
+      if not item then
+        return
+      end
+      if session_alive(target) then
+        vim.fn.system({ "tmux", "select-window", "-t", target .. ":" .. item.index })
+      end
+      refresh_indicator()
+      -- show(), not toggle(): picking a tab always means "put me there", never
+      -- "close the workspace I just chose from".
+      W.show()
+    end
+
+    local ok = pcall(function()
+      Snacks.picker.pick({
+        title = config.what .. " tabs",
+        items = items,
+        format = function(item)
+          return {
+            { item.active and " \u{258c}" or " \u{2502}", item.hl },
+            { (" %d "):format(item.index), item.hl },
+            { ("  %-8s "):format(panes_label(item.panes)), "SnacksPickerDimmed" },
+            {
+              item.summary ~= "" and item.summary or "(empty)",
+              item.summary ~= "" and "SnacksPickerLabel" or "SnacksPickerDimmed",
+            },
+          }
+        end,
+        preview = function(ctx)
+          ctx.preview:reset()
+          local buf = ctx.preview:scratch()
+          ctx.preview:set_title(("tab %d  (%s)"):format(ctx.item.index, panes_label(ctx.item.panes)))
+          vim.api.nvim_buf_set_lines(buf, 0, -1, false, ctx.item.lines)
+        end,
+        confirm = function(picker, item)
+          picker:close()
+          choose(item)
+        end,
+      })
+    end)
+    if ok then
+      return
+    end
+
+    -- No snacks.picker: plain select, same row content minus the preview.
+    vim.ui.select(items, {
+      prompt = config.what .. " tabs",
+      format_item = function(item)
+        return ("%s%d  %-8s  %s"):format(
+          item.active and "> " or "  ",
+          item.index,
+          panes_label(item.panes),
+          item.summary ~= "" and item.summary or "(empty)"
+        )
+      end,
+    }, choose)
   end
 
   ---Move the focused pane into an EXISTING group. tmux's own `join-pane`, so

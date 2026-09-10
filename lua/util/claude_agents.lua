@@ -20,7 +20,9 @@
 --
 --   one agent   = one pane          (%17)
 --   one group   = one tmux window   ("claude tab", a pill on the winbar)
---   all of it   = one shared session, so every Neovim window sees every agent
+--   all of it   = one session per Neovim instance, so unrelated Neovims never
+--                 drive each other's agents -- shared across collaborator
+--                 windows only once <leader>iss joins them (see below)
 --
 -- FOCUS is tmux's own active pane -- not a variable this file keeps. That is
 -- the whole reason the earlier "shared focus file" existed and could go: the
@@ -35,17 +37,30 @@ local M = {}
 
 local ws = require("util.tmux_workspace").new({
   id = "ClaudeWorkspace",
-  -- No pid: every Neovim on this machine shares ONE Claude workspace, so an
-  -- agent started in one terminal window is a send target in all of them.
+  -- Keyed by pid, exactly like the <C-/> terminal float: one Claude workspace
+  -- per Neovim instance, isolated from every other Neovim on the machine.
+  -- Sharing is opt-in and goes through collaboration -- <leader>iss hands this
+  -- instance's live workspace to the root session (adopt_workspace renames
+  -- "claude-ws-<pid>" into "claude-ws-root<port>"), after which every
+  -- collaborator window attaches to it through its own grouped view session.
+  --
+  -- This used to be shared_local + always_group: ONE machine-wide "claude-ws"
+  -- that every Neovim attached to as a member of its session GROUP. Session
+  -- groups share their windows and panes, so two unrelated Neovim instances
+  -- were driving the same Claude -- same pane, same output, same conversation.
+  -- always_group made it worse than a naming choice: adopt_workspace refuses
+  -- to rename a grouped session (correctly -- it would yank the workspace out
+  -- from under the other windows), so the <leader>iss hand-off could never
+  -- fire, and sharing was permanently on instead of opt-in.
   what = "Claude workspace",
   local_prefix = "claude-ws",
   root_prefix = "claude-ws",
-  shared_local = true,
-  always_group = true,
-  -- The workspace is shared and owned by nobody, so nothing would ever clean it
-  -- up: agents would accumulate across days. Reference-counted by view session
-  -- instead -- it survives you quitting ONE Neovim, and goes away when the last
-  -- one using it exits.
+  -- Outside collaboration the pid-keyed session is in owned_sessions and dies
+  -- with this Neovim anyway, so this changes nothing there. While collaborating
+  -- it is the ONLY thing that reaps "claude-ws-root<port>": that name is
+  -- shared, so it is deliberately owned by no single instance, and without this
+  -- it outlives every Neovim that ever joined -- leaving agents running in
+  -- detached panes, ~1.4GB of Claude processes, until the machine reboots.
   kill_when_last = true,
   -- --settings, not ~/.claude/settings.json: this attaches the status-reporting
   -- hooks (claude/hooks.settings.json) to exactly the Claudes this workspace
@@ -60,17 +75,14 @@ local ws = require("util.tmux_workspace").new({
   set_global_shell = false,
   float = { width = 0.97, height = 0.95 },
   missing_msg = "No Claude workspace yet (<leader>ac to start one)",
-  -- One screen at a time. Every Neovim on this box shares ONE workspace, so a
-  -- <leader>as from this window would otherwise pop open a second view of the
-  -- agents the window next to it is already showing -- the same panes twice,
-  -- both shrunk to the smaller client. The send still lands and tmux's own
-  -- select-pane still moves focus, so the window that HAS the workspace open
-  -- shows the result; this one just stays out of the way.
-  --
-  -- Only the implicit reveals. <leader>ac (W.toggle) is exempt by design: that
-  -- one is you explicitly asking for the workspace HERE.
-  single_view = true,
-  elsewhere_msg = "Claude workspace is already open in another Neovim window",
+  -- Deliberately NO single_view. It existed only because every Neovim shared
+  -- one workspace, where a <leader>as reveal here would pop open a second view
+  -- of the agents the window next door was already showing. Now each instance
+  -- has its own agents, so there is nothing to double up -- and leaving it on
+  -- would actively break reveals: its viewer markers are global tmux options
+  -- keyed by workspace id and pid, not by session, so this window having ITS
+  -- OWN float on screen would suppress the reveal of a different workspace
+  -- entirely in the Neovim next to it.
 })
 
 M.workspace = ws

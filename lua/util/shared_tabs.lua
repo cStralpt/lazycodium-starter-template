@@ -78,6 +78,27 @@ local installed = false
 -- one's async completion could reset this before the second one's replay
 -- finishes; low-frequency event stream in practice, not worth a full queue.
 local replaying = false
+
+---Run `fn` with broadcasting turned off.
+---
+---For work that fires TabNew/BufReadPost as a SIDE EFFECT rather than because
+---anyone did anything -- util/instant_preload.lua reading unloaded buffers in
+---the background is the case this exists for. broadcast_file() reports the
+---CURRENT buffer and tab (`%`, not <abuf>), so without this a background sweep
+---would spray every other window with one duplicate "tab N holds <whatever you
+---are looking at>" event per buffer it loaded.
+---
+---Saves and restores rather than clearing, so it nests inside a real replay
+---without ending it early.
+function M.suppress(fn)
+  local was = replaying
+  replaying = true
+  local ok, err = pcall(fn)
+  replaying = was
+  if not ok then
+    error(err, 0)
+  end
+end
 -- port -> number of event lines already processed. Initialized to the
 -- file's CURRENT length the first time a port is seen (not 0), so freshly
 -- joining/hosting a long-running session doesn't replay its entire

@@ -334,6 +334,21 @@ end
 local is_hosting = false
 
 -- Retries a few times in the rare case the random port is already taken.
+---Hand every tmux-backed workspace this window owns -- the <C-/> terminal
+---float AND the <leader>ac Claude workspace -- to the collaborative session
+---being joined, while their collaborative names are still unclaimed.
+---
+---Requiring them here is what guarantees both are registered with the factory.
+---Both are loaded by lua/config/keymaps.lua at startup today, so these two
+---requires are no-ops -- but claiming only whatever happened to be loaded is
+---precisely how the Claude workspace went unclaimed for so long, and a lazier
+---load order must not be able to reintroduce that silently.
+local function claim_workspaces()
+  require("util.floating_term")
+  require("util.claude_agents")
+  require("util.tmux_workspace").claim_all()
+end
+
 local function host_session()
   local file = current_tab_file()
   local cwd = vim.fn.getcwd()
@@ -385,12 +400,13 @@ local function host_session()
       vim.cmd("InstantStartSession 127.0.0.1 " .. port)
       add_session(port, file)
 
-      -- Hand the floating terminal's existing workspace to this brand-new
-      -- session immediately, while its name is still unclaimed -- BEFORE
+      -- Hand this window's existing workspaces to this brand-new session
+      -- immediately, while their names are still unclaimed -- BEFORE
       -- spawn_mirror_window below puts a second window in the race. See
-      -- util/floating_term.lua's claim_workspace for what goes wrong when
-      -- this is left until the next <C-/> instead.
-      require("util.floating_term").claim_workspace()
+      -- tmux_workspace's claim_workspace for what goes wrong when this is left
+      -- until the next <C-/> or <leader>ac instead: the mirror creates the
+      -- collaborative session EMPTY and everything you had open is orphaned.
+      claim_workspaces()
 
       -- Clear any stale event log/snapshot a PREVIOUS, unrelated session
       -- may have left behind under this exact port number -- see
@@ -441,6 +457,19 @@ local function host_session()
         )
       end
       spawn_mirror_window(port, file, cwd)
+
+      -- Fill in the buffers this window has listed but never LOADED, one per
+      -- tick, starting now that everything visible is already done. An
+      -- unloaded buffer has no lines, so instant.nvim shares it as EMPTY and
+      -- the mirror gets a named, blank README.md instead of the file.
+      --
+      -- Last, and asynchronous, on purpose. Loading a buffer means BufReadPost
+      -- -- filetype, treesitter, LSP -- for every file in a restored session,
+      -- which is far too much to put in front of the mirror window appearing.
+      -- It does not need to be first either: a buffer loaded later re-sends
+      -- under the same remote id, so a mirror that joined already simply
+      -- watches the file fill in. See util/instant_preload.lua.
+      require("util.instant_preload").start()
       return
     end
     ::continue::
@@ -497,14 +526,15 @@ local function do_join(port, fallback_file, fallback_cwd)
   -- Whoever shared this file did the naming, so the prediction has to use
   -- THEIR cwd. Ours only coincides with it for the auto-spawned mirror.
   local sender_cwd = fallback_cwd or session_cwd(port)
+
   vim.cmd("InstantJoinSession 127.0.0.1 " .. port)
   vim.g.instant_root_port = tonumber(port)
-  -- Same reasoning as host_session's call: claim while the name is still
+  -- Same reasoning as host_session's call: claim while the names are still
   -- unclaimed. Normally a no-op here (the host got there first); it only
   -- does anything when nobody in the session has opened a float yet, in
-  -- which case this window's own workspace becomes the shared one rather
+  -- which case this window's own workspaces become the shared ones rather
   -- than being abandoned.
-  require("util.floating_term").claim_workspace()
+  claim_workspaces()
   if file ~= "" then
     vim.defer_fn(function()
       poll_and_focus(file, sender_cwd, 150)
@@ -606,6 +636,10 @@ return {
     -- active well before any <leader>iss press.
     require("util.shared_terminal").install()
     require("util.shared_tabs").install()
+    -- And the same for the 'modified' flag, which instant.nvim sets on every
+    -- buffer it syncs whether or not the content actually changed -- see
+    -- util/instant_modified.lua.
+    require("util.instant_modified").install()
   end,
   keys = {
     { "<leader>iss", host_session, desc = "Instant: host session + open mirror window" },

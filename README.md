@@ -214,7 +214,9 @@ selects and `y` or `<C-c>` copies to the system clipboard.
 
 ## 🤖 Claude Code in Neovim
 
-Run **many Claudes at once**, shared across every Neovim window on the machine.
+Run **many Claudes at once**. Each Neovim instance gets its own workspace, so
+two unrelated windows never drive the same agent; `<leader>iss` shares the one
+you're in with every window that joins that root session.
 <img width="1809" height="1143" alt="image" src="https://github.com/user-attachments/assets/41b4d39f-bba0-4443-b8b0-32ae05e0687a" />
 
 Requires `tmux`.
