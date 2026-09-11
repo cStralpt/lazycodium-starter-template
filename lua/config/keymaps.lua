@@ -81,10 +81,10 @@ end, { desc = "Exit terminal mode (scrollback in a workspace float)" })
 
 -- <C-/> toggles a near-fullscreen floating terminal that's actually a
 -- persistent tmux session (lua/util/floating_term.lua) -- so, unlike a
--- single bare Snacks terminal buffer, it supports real splits (<leader>ts/tv)
--- and tabs/terminal groups (<leader>tn, <leader>t]/t[) via tmux itself,
--- while state (running processes, scrollback) survives hiding/reshowing
--- untouched.
+-- single bare Snacks terminal buffer, it supports real splits and tabs
+-- (terminal groups) via tmux itself, driven by the editor's own window/tab
+-- keys inside the float (util/tmux_workspace.lua, bind_editor_keys), while
+-- state (running processes, scrollback) survives hiding/reshowing untouched.
 local floating_term = require("util.floating_term")
 --
 -- Guarded like every other workspace key: from inside the Claude float this
@@ -94,21 +94,13 @@ local floating_term = require("util.floating_term")
 map({ "n", "t" }, "<C-/>", floating_term.guard(floating_term.toggle, "<C-/>"), { desc = "Terminal (floating, tmux)" })
 map({ "n", "t" }, "<C-_>", floating_term.guard(floating_term.toggle, "<C-_>"), { desc = "which_key_ignore" })
 
--- These are normal-mode only (not "t"): <leader> is space, which you type
--- constantly inside a shell, so mapping it in terminal-insert mode would
--- break normal typing. Drop into terminal-normal mode first (<C-g>, mapped
--- above) to reach them while the floating terminal is focused.
-map("n", "<leader>ts", floating_term.guard(floating_term.split_horizontal, "<leader>ts"), { desc = "Terminal: split pane (horizontal)" })
-map("n", "<leader>tv", floating_term.guard(floating_term.split_vertical, "<leader>tv"), { desc = "Terminal: split pane (vertical)" })
-map("n", "<leader>tn", floating_term.guard(floating_term.new_tab, "<leader>tn"), { desc = "Terminal: new tab (terminal group)" })
-map("n", "<leader>tx", floating_term.guard(floating_term.close_pane, "<leader>tx"), { desc = "Terminal: close pane" })
--- Not ]t/[t: LazyVim already claims those for todo-comments.nvim, and the
--- `map()` wrapper above silently skips ours whenever a lazy-loaded plugin
--- keymap already owns the lhs -- so ]t/[t would appear to do nothing.
-map("n", "<leader>t]", floating_term.guard(floating_term.next_tab, "<leader>t]"), { desc = "Terminal: next tab" })
-map("n", "<leader>t[", floating_term.guard(floating_term.prev_tab, "<leader>t["), { desc = "Terminal: prev tab" })
--- The tab picker, to <leader>t] what <leader>af is to a Claude agent: choose a
--- tab by SEEING what it is running, rather than stepping through them blind.
+-- Splits, tabs, close and zoom have no <leader>t* keys of their own any more:
+-- inside the float the editor's <leader>- / <leader>| / <leader><tab>* /
+-- <leader>wd / <leader>wm do them (buffer-local, util/tmux_workspace.lua),
+-- and from the editor they only ever changed a terminal you could not see.
+-- The tab picker stays: choose a tab by SEEING what it is running, rather
+-- than stepping through them blind. Normal-mode only (not "t"): <leader> is
+-- space, which you type constantly inside a shell -- <C-g> first.
 map("n", "<leader>tf", floating_term.guard(floating_term.pick_tab, "<leader>tf"), { desc = "Terminal: pick tab" })
 
 -- <leader>qq closes what you are LOOKING AT.
@@ -154,12 +146,19 @@ local marks = require("util.send_marks")
 
 map("n", "<leader>ac", agents.guard(agents.toggle, "<leader>ac"), { desc = "Claude: toggle workspace" })
 map("n", "<leader>an", agents.guard(agents.new_group, "<leader>an"), { desc = "Claude: new group (claude tab)" })
+-- <leader>an with a directory picker first: a new group with a fresh agent in
+-- the directory you choose (under the session's cwd, like <leader>E).
+-- Replaces the old <leader>aID directory prompt.
+map("n", "<leader>at", agents.guard(agents.new_group_in_dir, "<leader>at"), { desc = "Claude: new group in a dir" })
+-- Same picker, but for the agent you already have: a fresh claude in another
+-- directory, in the same pane -- same group, same slot, same pill.
+map("n", "<leader>ad", agents.guard(agents.restart_in_dir, "<leader>ad"), { desc = "Claude: restart agent in a dir" })
+-- an/ao/av survive the editor-key mirrors because they mean something the
+-- mirrors cannot: from the EDITOR, a new agent rooted in the current file's
+-- project. Next/prev group, close and zoom had no such editor meaning and are
+-- gone -- inside the float they are <leader><tab>] / [, <leader>wd, <leader>wm.
 map("n", "<leader>ao", agents.guard(agents.split_below, "<leader>ao"), { desc = "Claude: another agent below" })
-map("n", "<leader>aV", agents.guard(agents.split_right, "<leader>aV"), { desc = "Claude: another agent right" })
-map("n", "<leader>a]", agents.guard(agents.next_group, "<leader>a]"), { desc = "Claude: next group" })
-map("n", "<leader>a[", agents.guard(agents.prev_group, "<leader>a["), { desc = "Claude: prev group" })
-map("n", "<leader>ax", agents.guard(agents.close_agent, "<leader>ax"), { desc = "Claude: close this agent" })
-map("n", "<leader>az", agents.guard(agents.zoom, "<leader>az"), { desc = "Claude: show only this agent" })
+map("n", "<leader>av", agents.guard(agents.split_right, "<leader>av"), { desc = "Claude: another agent right" })
 -- Counted, this skips the picker AND the float entirely: `3<leader>af` just
 -- retargets where the next send lands, read off the statusline pills. Bare, it
 -- is still the picker, which does reveal -- browsing what each agent holds and

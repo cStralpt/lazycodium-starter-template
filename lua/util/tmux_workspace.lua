@@ -87,6 +87,9 @@ end
 ---       Neovim on this machine already has the float on screen. Only meaningful with shared_local:
 ---       a per-instance workspace is never visible anywhere else. W.toggle is deliberately exempt.
 ---@field elsewhere_msg string? shown when single_view suppresses a reveal
+---@field keys? { [1]: string, [2]: fun(), [3]: string }[] extra normal-mode keys for THIS workspace,
+---       bound buffer-locally on its float and scrollback buffers exactly like the editor
+---       mirrors -- {lhs, fn, desc}. For a key that means something inside one workspace only.
 
 ---The workspace the cursor is in right now, or nil in an ordinary buffer.
 ---Lets a shared keymap (<leader>qq) act on whichever workspace you are looking
@@ -562,6 +565,18 @@ function M.new(config)
   ---tmux() -- claude_agents.focus resolves a pane id and selects it by hand.
   W.dismiss_scrollback = sb_dismiss
 
+  ---The float buffer currently on screen, and the exact session it runs
+  ---`tmux attach -t` against.
+  ---
+  ---Declared HERE, above W.owns_buf, and nowhere lower. A Lua local is only
+  ---visible to code below its declaration; this used to sit further down, past
+  ---owns_buf, so the `attached` owns_buf read was a global that was always nil
+  ----- and "is this the workspace's terminal buffer" was always false. Only the
+  ---scrollback snapshot was ever recognised, which is why the keymap guards
+  ---and split_cwd() worked from <C-g> but not from <C-\><C-n>.
+  ---@type {buf: integer, target: string}?
+  local attached = nil
+
   ---Set while a scrollback snapshot is open, so that buffer counts as being
   ---"in" this workspace too -- <leader>t* is normal-mode only and the snapshot
   ---is where you reach it from, so ownership has to follow it there.
@@ -693,16 +708,25 @@ function M.new(config)
 
   local refresh_indicator
 
-  ---Click handler for a winbar tab pill. Reads my_session() itself rather than
-  ---capturing a target, since the click syntax can only name a global.
-  ---@param minwid integer the tmux window index, passed as the click item's minwid
-  _G[CLICK_FN] = function(minwid)
+  ---Jump to a tab (tmux window) by spec: an index, or one of tmux's own
+  ---anchors -- "^" for the first, "$" for the last. Reads my_session() itself
+  ---rather than capturing a target, since the click syntax below can only
+  ---name a global. Shared by the pill click and the <leader><tab>f/l editor
+  ---mirrors, so clicking a pill and pressing the key are one path.
+  ---@param spec integer|string
+  local function select_tab(spec)
     sb_dismiss()
     local target = my_session()
     if session_alive(target) then
-      vim.fn.system({ "tmux", "select-window", "-t", target .. ":" .. minwid })
+      vim.fn.system({ "tmux", "select-window", "-t", target .. ":" .. spec })
     end
     refresh_indicator()
+  end
+
+  ---Click handler for a winbar tab pill.
+  ---@param minwid integer the tmux window index, passed as the click item's minwid
+  _G[CLICK_FN] = function(minwid)
+    select_tab(minwid)
   end
 
   ---Rounded-pill winbar for this workspace's tmux windows ("tabs"), mirroring
@@ -780,12 +804,7 @@ function M.new(config)
     return indicator.text
   end
 
-  ---The float buffer currently on screen, and the exact session it runs
-  ---`tmux attach -t` against. Forward-declared here because W.show() (defined
-  ---above) reads it: as a local it would otherwise not be in scope there.
-  ---@type {buf: integer, target: string}?
-  local attached = nil
-
+  -- `attached` is declared up by W.owns_buf -- see the note there.
   local pane_bound = {}
 
   ---Is the process behind a "-w<pid>" view session (or a viewer marker) still
@@ -902,6 +921,49 @@ function M.new(config)
     })
   end
 
+  ---The editor's own window and tab keys, meaning the same thing INSIDE a
+  ---workspace: <leader>- / <leader>| split a pane, <leader><tab><tab> opens a
+  ---group, <leader><tab>] / [ walk them, <leader>wm zooms, and so on -- one
+  ---set of muscle memory across editor windows and workspace panes.
+  ---
+  ---Buffer-local and normal-mode, and both halves matter:
+  ---  - Buffer-local, on the float's own buffers only, so these OVERRIDE the
+  ---    global LazyVim mappings there and exist nowhere else. The globals run
+  ---    <C-W>v / :tabnew, which from a float land in the editor layout BEHIND
+  ---    it -- <leader>| used to split the code window while the float stayed
+  ---    on top, unchanged. And a mapping that only exists on the float's
+  ---    buffer cannot fire in a code buffer, so nothing here can drift the
+  ---    other way either: there is no "if in a workspace" dispatch in the
+  ---    editor's keys, and none is needed.
+  ---  - Normal mode only, like <leader>t* and <leader>a*: <leader> is space,
+  ---    which you type constantly at a prompt. Reach them the same way --
+  ---    <C-g> into the scrollback (this binds there too), or <C-\><C-n>.
+  ---
+  ---Every key dispatches to the same W.* action the <leader>t*/<leader>a*
+  ---keys use, so a split is a split whichever key you reached it by -- there
+  ---is no second implementation to drift.
+  ---@param buf integer the terminal buffer, or a scrollback snapshot of it
+  local function bind_editor_keys(buf)
+    local keys = {
+      { "<leader>-", W.split_horizontal, "split pane below" },
+      { "<leader>|", W.split_vertical, "split pane right" },
+      { "<leader>wd", W.close_pane, "close pane" },
+      { "<leader>wm", W.zoom_pane, "zoom pane (toggle)" },
+      { "<leader>uZ", W.zoom_pane, "zoom pane (toggle)" },
+      { "<leader><tab><tab>", W.new_tab, "new tab" },
+      { "<leader><tab>]", W.next_tab, "next tab" },
+      { "<leader><tab>[", W.prev_tab, "previous tab" },
+      { "<leader><tab>d", W.close_tab, "close tab" },
+      { "<leader><tab>f", W.first_tab, "first tab" },
+      { "<leader><tab>l", W.last_tab, "last tab" },
+      { "<leader><tab>o", W.close_other_tabs, "close other tabs" },
+    }
+    vim.list_extend(keys, config.keys or {})
+    for _, k in ipairs(keys) do
+      vim.keymap.set("n", k[1], k[2], { buffer = buf, desc = W.what() .. ": " .. k[3] })
+    end
+  end
+
   ---Move between TMUX PANES with the same <C-hjkl> used for Neovim windows
   ---everywhere else. Buffer-local and set only on the float's own buffer, so
   ---it overrides (not adds to) the global <C-hjkl> = ":wincmd" mappings --
@@ -916,6 +978,7 @@ function M.new(config)
     end
     pane_bound[buf] = true
     watch_visibility(buf)
+    bind_editor_keys(buf)
     local dirs = { h = "-L", j = "-D", k = "-U", l = "-R" }
     -- Where to go when there is no pane that way. Left/right only: the tab
     -- pills sit side by side on the winbar, so h/l continuing into the
@@ -1122,6 +1185,19 @@ function M.new(config)
     end
     terminal:focus()
     after_open(cmd_argv, target)
+    -- Land TYPING at the prompt. Snacks' start_insert/auto_insert normally do
+    -- this on focus, but two of the things a reveal is reached from undo it
+    -- as they leave: the directory picker (<leader>at/ad) stops insert mode
+    -- while closing -- its input ran in insert mode -- and that lands after
+    -- the startinsert above; the `-` browser's close hands focus back through
+    -- oil. So it is asserted once more, one tick later, when they are done.
+    -- Only if the float is still the current window: a reveal that lost focus
+    -- to something else must not drag insert mode there.
+    vim.schedule(function()
+      if W.in_float() and vim.api.nvim_get_mode().mode:sub(1, 1) ~= "t" then
+        vim.cmd("startinsert")
+      end
+    end)
   end
 
   ---Are we currently sitting inside this workspace's float?
@@ -1133,6 +1209,59 @@ function M.new(config)
     return attached ~= nil
       and vim.api.nvim_buf_is_valid(attached.buf)
       and vim.api.nvim_get_current_buf() == attached.buf
+  end
+
+  ---The focused tmux pane's rectangle in EDITOR cells -- what an overlay has
+  ---to cover to read as "this pane, changing content" rather than "something
+  ---over the workspace". The `-` directory browser (util/dir_browser.lua) lays
+  ---itself out on this; with two agents side by side, `-` in the right one
+  ---must not paper over the left one.
+  ---
+  ---Measured, not assumed: nvim_win_get_position() is the float's OUTER corner
+  ---(border included), its text area starts one row and column in, and one
+  ---more row down for the winbar the pills sit on; tmux's pane_left/pane_top
+  ---count from that text area. relative="win" would fold the border and
+  ---winbar in by itself (the scrollback below relies on that), but oil
+  ---re-applies its float's row/col as EDITOR coordinates on every directory
+  ---change, so a window-relative browser jumped to the corner -- hence
+  ---absolute cells here.
+  ---@return { row: integer, col: integer, width: integer, height: integer }?
+  function W.pane_region()
+    if not (attached and vim.api.nvim_buf_is_valid(attached.buf)) then
+      return nil
+    end
+    local win = nil
+    for _, w in ipairs(vim.api.nvim_list_wins()) do
+      if vim.api.nvim_win_is_valid(w) and vim.api.nvim_win_get_buf(w) == attached.buf then
+        win = w
+        break
+      end
+    end
+    if not win then
+      return nil
+    end
+    local geom = vim.fn.systemlist({
+      "tmux",
+      "display-message",
+      "-p",
+      "-t",
+      my_session(),
+      "#{pane_left} #{pane_top} #{pane_width} #{pane_height}",
+    })
+    local left, top, width, height = (geom[1] or ""):match("^(%d+) (%d+) (%d+) (%d+)$")
+    if not left then
+      return nil
+    end
+    local pos = vim.api.nvim_win_get_position(win)
+    local cfg = vim.api.nvim_win_get_config(win)
+    local border = (cfg.border and cfg.border ~= "none") and 1 or 0
+    local winbar = vim.wo[win].winbar ~= "" and 1 or 0
+    return {
+      row = pos[1] + border + winbar + tonumber(top),
+      col = pos[2] + border + tonumber(left),
+      width = tonumber(width),
+      height = tonumber(height),
+    }
   end
 
   ---Swap the float from the live terminal to a NORMAL Neovim buffer holding
@@ -1553,6 +1682,13 @@ function M.new(config)
       end, { buffer = buf, desc = "Tmux pane: move " .. key })
     end
 
+    -- The editor's split/tab keys, for the same reason as <C-hjkl> above: the
+    -- snapshot is where <leader> is reachable, so it is where they are needed.
+    -- Each action dismisses the snapshot on its way (they all go through
+    -- tmux() or select_tab(), which start with sb_dismiss()), so you land back
+    -- at the live pane with the split or tab already made.
+    bind_editor_keys(buf)
+
     -- i/a/A/I/o/O/c/s are how you leave normal mode everywhere else in Neovim,
     -- and the muscle memory does not stop at the edge of the float -- so here
     -- they mean "back to typing at the prompt", which is the terminal. Without
@@ -1591,7 +1727,13 @@ function M.new(config)
   ---/tmp/projA produced a pane in /home/cstralpt, the directory the tmux SERVER
   ---was started from.
   local function split_cwd()
-    if not W.in_float() then
+    -- owns_buf, not in_float: the <C-g> scrollback snapshot is a different
+    -- buffer from the terminal, and it is where <leader> is reachable -- so it
+    -- is where every split/tab key is actually pressed. This runs BEFORE the
+    -- snapshot is dismissed (arguments are evaluated before tmux() is called),
+    -- and in_float() there said "not in the workspace", which sent a split
+    -- made from a pane in ~/proj/api to the editor's root, ~/proj, instead.
+    if not W.owns_buf(vim.api.nvim_get_current_buf()) then
       return LazyVim.root()
     end
     local out = vim.fn.system({ "tmux", "display-message", "-p", "-t", my_session(), "#{pane_current_path}" })
@@ -1626,8 +1768,9 @@ function M.new(config)
   end
 
   ---New tab (tmux window) -- a fresh group.
-  function W.new_tab()
-    tmux(with_run({ "new-window", "-c", split_cwd() }))
+  ---@param cwd string? where it starts; nil = the split_cwd() rule below
+  function W.new_tab(cwd)
+    tmux(with_run({ "new-window", "-c", cwd or split_cwd() }))
     refresh_indicator()
   end
 
@@ -1638,6 +1781,55 @@ function M.new(config)
 
   function W.prev_tab()
     tmux({ "previous-window" })
+    refresh_indicator()
+  end
+
+  ---Restart a pane's command in `cwd`, IN PLACE: same pane id, same group,
+  ---same slot -- only the process and its directory change. tmux's own
+  ---respawn-pane, so the layout is untouched; and because the pane id
+  ---survives, everything keyed on it (an agent's status file, its statusline
+  ---pill) simply carries on pointing at the fresh process. -k ends whatever is
+  ---running there first. The Claude workspace passes its `claude` explicitly
+  ---through with_run(); the terminal one respawns the pane's original command.
+  ---
+  ---Not routed through tmux(): that helper targets the SESSION (its active
+  ---pane at that moment), and this must hit the exact pane the caller chose --
+  ---between choosing and confirming is where an active pane can change.
+  ---@param cwd string
+  ---@param pane string tmux pane id
+  ---@return boolean
+  function W.respawn_pane(cwd, pane)
+    sb_dismiss()
+    local out = vim.fn.system(with_run({ "tmux", "respawn-pane", "-k", "-t", pane, "-c", cwd }))
+    if vim.v.shell_error ~= 0 then
+      vim.notify("tmux: " .. vim.trim(out), vim.log.levels.WARN)
+      return false
+    end
+    refresh_indicator()
+    return true
+  end
+
+  ---Editor <leader><tab>f / <leader><tab>l, in tmux terms.
+  function W.first_tab()
+    select_tab("^")
+  end
+
+  function W.last_tab()
+    select_tab("$")
+  end
+
+  ---Close the current tab (tmux window), every pane in it -- <leader><tab>d.
+  ---Like close_pane, closing the last tab ends the session, same as a real
+  ---terminal.
+  function W.close_tab()
+    tmux({ "kill-window" })
+    refresh_indicator()
+  end
+
+  ---Close every tab but the current one -- <leader><tab>o, the editor's
+  ---:tabonly, except that here the tabs hold running processes, which end.
+  function W.close_other_tabs()
+    tmux({ "kill-window", "-a" })
     refresh_indicator()
   end
 

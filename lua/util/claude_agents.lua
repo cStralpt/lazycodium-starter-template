@@ -35,6 +35,10 @@ local status = require("util.claude_agent_status")
 
 local M = {}
 
+-- The command every agent runs.
+local CLAUDE_CMD = "claude --dangerously-skip-permissions --settings "
+  .. vim.fn.expand("~/.config/nvim/claude/hooks.settings.json")
+
 local ws = require("util.tmux_workspace").new({
   id = "ClaudeWorkspace",
   -- Keyed by pid, exactly like the <C-/> terminal float: one Claude workspace
@@ -68,13 +72,26 @@ local ws = require("util.tmux_workspace").new({
   -- load -- so a Claude you run by hand in any other terminal is unaffected and
   -- reports nothing, which is correct, because it is not an agent this
   -- workspace can address.
-  cmd = "claude --dangerously-skip-permissions --settings " .. vim.fn.expand("~/.config/nvim/claude/hooks.settings.json"),
+  cmd = CLAUDE_CMD,
   -- Never set tmux's GLOBAL default-command here -- that would make every new
   -- tmux window on this machine, including the <C-/> terminal's, run claude.
   -- Each window and pane gets `claude` passed explicitly instead.
   set_global_shell = false,
   float = { width = 0.97, height = 0.95 },
   missing_msg = "No Claude workspace yet (<leader>ac to start one)",
+  -- `-` opens oil everywhere else; here it opens oil to choose THIS agent's
+  -- directory (M.browse_dir). Bound on the float's own buffers like the editor
+  -- mirrors, so the global oil `-` never runs inside the float window again --
+  -- that swapped the terminal out for a listing you could do nothing with.
+  keys = {
+    {
+      "-",
+      function()
+        M.browse_dir()
+      end,
+      "browse for this agent's directory",
+    },
+  },
   -- Deliberately NO single_view. It existed only because every Neovim shared
   -- one workspace, where a <leader>as reveal here would pop open a second view
   -- of the agents the window next door was already showing. Now each instance
@@ -548,7 +565,7 @@ local function acts(fn)
     fn(...)
     -- The reveal must not take the action down with it: the agent you just
     -- created still exists even if the float fails to open. But it is REPORTED
-    -- rather than swallowed -- a silent pcall here is what made "<leader>aV
+    -- rather than swallowed -- a silent pcall here is what made "<leader>av
     -- didn't open anything" impossible to diagnose.
     local ok, err = pcall(ws.show)
     if not ok then
@@ -562,18 +579,172 @@ M.toggle = ws.toggle
 M.new_group = acts(ws.new_tab)
 M.split_below = acts(ws.split_horizontal)
 M.split_right = acts(ws.split_vertical)
-M.next_group = acts(ws.next_tab)
-M.prev_group = acts(ws.prev_tab)
--- Closing is the one action that deliberately does NOT reveal: if you closed an
--- agent from the editor, popping the workspace open is the opposite of what you
--- asked for.
-M.close_agent = ws.close_pane
+-- No next/prev group, close or zoom here: those are the editor's own keys
+-- inside the float (<leader><tab>] / [, <leader>wd, <leader>wm -- see
+-- tmux_workspace.lua's bind_editor_keys), and had no meaning from the editor.
 
----Show ONLY this agent, hiding the others in its group -- and toggle back.
----tmux's own zoom, so the hidden agents keep running and the exact layout
----comes back on the second press. The group's pill gets a marker while
----zoomed, so hidden panes are never invisible state.
-M.zoom = acts(ws.zoom_pane)
+
+---The directory picker behind <leader>at and <leader>ad.
+---
+---The rows are the directories under Neovim's cwd -- the same place <leader>E
+---explores -- plus the cwd itself as the first row. Relative to the session on
+---purpose: started in ~/takumipay, the choices ARE api, mobile-app, web-app
+---and what is inside them, which is what "put a Claude over there" means.
+---An earlier version listed every project on the machine, marker-file hunting
+---across ~ -- a second, global picker on top of the one the session already
+---defines, and the wrong one to type into.
+---
+---fd, directories only, gitignore-aware, no hidden entries. node_modules is
+---excluded by name as well: a directory of repos is not itself a repo, and fd
+---then applies none of the nested .gitignore files -- verified, over a
+---thousand node_modules directories walked in from ~/takumipay without it.
+---
+---Rows are the cwd-relative path, parent dimmed, name bold; the empty-query
+---order is shallow first, so the top of the list is the projects themselves.
+---Frecency on top of that: the directory you keep choosing floats up.
+---@param title string
+---@param on_choose fun(dir: string)
+local function pick_dir(title, on_choose)
+  local cwd = vim.fn.getcwd()
+  local ok = pcall(function()
+    Snacks.picker.pick({
+      title = ("%s  (%s)"):format(title, vim.fn.fnamemodify(cwd, ":~")),
+      cwd = cwd,
+      finder = function(_, ctx)
+        local fd = require("snacks.picker.source.files").get_fd()
+        local proc = fd
+          and require("snacks.picker.source.proc").proc({
+            cmd = fd,
+            args = { "--type", "d", "--color", "never", "--exclude", "node_modules" },
+            cwd = cwd,
+            notify = false,
+          }, ctx)
+        ---@async
+        return function(cb)
+          cb({ file = cwd, text = ".", dir = true, depth = 0 })
+          if not proc then
+            vim.notify("`fd` is required to list directories", vim.log.levels.WARN)
+            return
+          end
+          proc(function(item)
+            local rel = item.text:gsub("/$", "")
+            local _, slashes = rel:gsub("/", "")
+            cb({ file = cwd .. "/" .. rel, text = rel, dir = true, depth = slashes + 1 })
+          end)
+        end
+      end,
+      format = function(item)
+        if item.text == "." then
+          return {
+            { "\u{f07b}  ", "SnacksPickerIcon" },
+            { vim.fn.fnamemodify(cwd, ":~"), "SnacksPickerBold" },
+            { "  (cwd)", "SnacksPickerDimmed" },
+          }
+        end
+        local dir, base = item.text:match("^(.*/)([^/]+)$")
+        return {
+          { "\u{f07b}  ", "SnacksPickerIcon" },
+          { dir or "", "SnacksPickerDir" },
+          { base or item.text, "SnacksPickerBold" },
+        }
+      end,
+      preview = "directory",
+      matcher = { frecency = true, sort_empty = true, cwd_bonus = false },
+      sort = { fields = { "score:desc", "depth", "text" } },
+      confirm = function(picker, item)
+        picker:close()
+        if not (item and item.file) then
+          return
+        end
+        -- One tick later, not now: picker:close() only SCHEDULES the closing
+        -- of its windows, and that runs after this callback returns -- on top
+        -- of the reveal on_choose does, leaving the editor focused with the
+        -- workspace visible but not typing. The queue is FIFO, so this lands
+        -- after the picker is gone.
+        vim.schedule(function()
+          on_choose(item.file)
+        end)
+      end,
+    })
+  end)
+  if ok then
+    return
+  end
+  -- No snacks.picker: the directory prompt this replaced, as the fallback.
+  vim.ui.input({ prompt = title .. ": ", default = cwd .. "/", completion = "dir" }, function(dir)
+    if dir and dir ~= "" then
+      on_choose(vim.fn.fnamemodify(vim.fn.expand(dir), ":p"))
+    end
+  end)
+end
+
+---<leader>at: <leader>an, but you choose the directory first -- a new group
+---with a fresh agent in the directory you picked, revealed like every other
+---new agent. This replaced a vim.ui.input prompt for a directory (<leader>aID)
+---and, briefly, a shell to cd from: choosing from a list of the session's
+---directories is the whole step, so the agent starts straight away.
+function M.new_group_in_dir()
+  pick_dir("Claude: new group in directory", M.new_group)
+end
+
+---A fresh Claude in `dir`, in `agent`'s pane -- same pane, same group, same
+---slot. The conversation there ends (it is a new process; `claude --resume`
+---inside it can bring one back); everything around it -- the pill, its number,
+---the group layout, where your next count-send lands -- stays exactly where it
+---was, because the pane id does. Reveals like the other actions, so you watch
+---the new agent come up. Behind both <leader>ad and the `-` browser.
+---@param agent { slot: integer, pane: string }
+---@param dir string
+local function restart_in(agent, dir)
+  if not ws.respawn_pane(dir, agent.pane) then
+    return
+  end
+  local ok, err = pcall(ws.show)
+  if not ok then
+    vim.notify("Agent restarted, but the float failed to open: " .. tostring(err), vim.log.levels.ERROR)
+  end
+  M.redraw()
+end
+
+---<leader>ad: move the FOCUSED agent to another directory, chosen from the
+---same project picker as <leader>at.
+function M.restart_in_dir()
+  local cur = M.current()
+  if not cur then
+    vim.notify("No Claude agent yet (<leader>ac to start one)", vim.log.levels.WARN)
+    return
+  end
+  pick_dir(("Claude: restart agent %d in directory"):format(cur.slot), function(dir)
+    restart_in(cur, dir)
+  end)
+end
+
+---`-` inside the workspace: choose the focused agent's new directory the way
+---`-` browses files everywhere else -- oil, in a float, opened where the agent
+---is (util/dir_browser.lua). <CR> enters a directory, - goes up; ` or
+---<leader>ad restarts the agent in the directory on screen; q / <Esc> leave.
+function M.browse_dir()
+  local cur = M.current()
+  if not cur then
+    vim.notify("No Claude agent yet (<leader>ac to start one)", vim.log.levels.WARN)
+    return
+  end
+  -- The browser returns to the window it was opened from; make that the
+  -- float, not a scrollback snapshot that closes itself the moment focus
+  -- leaves it (see dir_browser.open).
+  ws.dismiss_scrollback()
+  local agent = { slot = cur.slot, pane = cur.pane }
+  require("util.dir_browser").open({
+    start = cur.cwd ~= "" and cur.cwd or LazyVim.root(),
+    region = ws.pane_region(),
+    label = ("Claude agent %d"):format(cur.slot),
+    verb = "restart agent here",
+    confirm_keys = { "<leader>ad" },
+    on_choose = function(dir)
+      restart_in(agent, dir)
+    end,
+  })
+end
 
 ---Move the focused agent somewhere else.
 ---

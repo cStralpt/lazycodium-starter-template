@@ -190,12 +190,25 @@ running processes survive hiding it. Requires `tmux`.
 | Keybinding | What it does |
 | --- | --- |
 | `<C-/>` | Toggle the floating terminal |
-| `<leader>ts` / `<leader>tv` | Split pane horizontally / vertically |
-| `<leader>tn` | New tab (terminal group) |
-| `<leader>t]` / `<leader>t[` | Next / previous tab |
-| `<leader>tx` | Close pane |
+| `<leader>tf` | Pick a tab (live preview) |
 | `<C-h/j/k/l>` | Move between panes |
 | `<C-g>` | Scrollback in a normal buffer — see below |
+| `-` | Pick a directory with oil, `cd` the pane there — `<CR>` enter, `-` up, `` ` `` choose, `q` cancel |
+
+### Editor keys inside a float
+
+The editor's window/tab keys also work inside both floats (terminal and Claude),
+on tmux panes and tabs. Normal mode only (`<C-g>` first).
+
+| Keybinding | In a float |
+| --- | --- |
+| `<leader>-` / `<leader>\|` | Split pane below / right |
+| `<leader>wd` | Close pane |
+| `<leader>wm` | Zoom pane (toggle) |
+| `<leader><tab><tab>` | New tab |
+| `<leader><tab>]` / `<leader><tab>[` | Next / previous tab |
+| `<leader><tab>f` / `<leader><tab>l` | First / last tab |
+| `<leader><tab>d` / `<leader><tab>o` | Close tab / close other tabs |
 
 ### Scrollback
 
@@ -223,24 +236,24 @@ Requires `tmux`.
 
 ### Workspace
 
-Mirrors the `<leader>t*` terminal bindings one for one.
+Splits, tabs, close and zoom inside the float are the
+[editor keys](#editor-keys-inside-a-float); these are the Claude-specific ones.
 
 | Keybinding | What it does |
 | --- | --- |
 | `<leader>ac` | Toggle the Claude workspace |
 | `<leader>an` | New group ("claude tab") |
-| `<leader>ao` | Another agent, below |
-| `<leader>aV` | Another agent, beside |
-| `<leader>a]` / `<leader>a[` | Next / previous group |
-| `<leader>ax` | Close this agent |
-| `<leader>az` | Show only this agent — hides the others in its group, press again to restore |
+| `<leader>ao` / `<leader>av` | Another agent below / beside |
+| `<leader>at` | New group in a directory you pick (under the cwd, like `<leader>E`) |
+| `<leader>ad` | Restart this agent in a directory you pick — same pane, same slot |
+| `-` | Same, browsing with oil from the agent's directory — `<CR>` enter, `-` up, `` ` `` choose, `q` cancel |
 | `<leader>af` | Pick an agent (grouped, labelled, with a live preview of each pane) |
 | `<leader>am` | Move this agent — pick which tab to land beside, or a new group of its own |
 | `<C-h/j/k/l>` | Move between panes |
 
-`<leader>ao` / `<leader>aV` / `<leader>an` work from the editor too. From the
-**editor** the new agent uses the current file's project root; from **inside a
-pane** it inherits that pane's directory.
+`<leader>an` / `<leader>ao` / `<leader>av` work from the editor too: there the
+new agent uses the current file's project root; inside a pane it inherits that
+pane's directory.
 
 ### Focus without opening anything
 

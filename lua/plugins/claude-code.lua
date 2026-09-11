@@ -94,28 +94,6 @@ local M = {
       desc = "Mention all marked lines",
     },
     {
-      "<leader>aID",
-      function()
-        vim.ui.input({
-          prompt = "Spin review session in dir: ",
-          default = vim.fn.getcwd() .. "/",
-          completion = "dir",
-        }, function(dir)
-          if not dir or dir == "" then
-            return
-          end
-          dir = vim.fn.fnamemodify(vim.fn.expand(dir), ":p")
-          local bufnr = require("claudecode.terminal").get_active_terminal_bufnr()
-          if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
-            vim.api.nvim_buf_delete(bufnr, { force = true })
-          end
-          vim.cmd("cd " .. vim.fn.fnameescape(dir))
-          vim.cmd("ClaudeCode")
-        end)
-      end,
-      desc = "Spin review session in a directory",
-    },
-    {
       "<leader>aIw",
       function()
         local term = require("claudecode.terminal")

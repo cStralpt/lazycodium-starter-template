@@ -4,7 +4,10 @@ if vim.g.vscode then
   require("config.lazy")
 else
   require("config.lazy")
-  require("oil").setup()
+  -- No `require("oil").setup()` here: lazy.nvim already runs setup(opts) from
+  -- lua/plugins/oil.lua, and a second bare call RESETS oil to its defaults --
+  -- it silently threw away that spec's float.get_win_title (the Claude
+  -- directory browser's title).
 
   -- `nvim <dir>` normally drops straight into oil.nvim's directory listing.
   -- If persistence.nvim already has a saved session for that project, skip
