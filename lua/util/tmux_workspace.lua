@@ -921,6 +921,113 @@ function M.new(config)
     })
   end
 
+  -- One URL's worth of characters (RFC 3986 unreserved + reserved + `%`).
+  -- ASCII only on purpose: tmux's pane border `│` is multibyte, so a URL in a
+  -- split stops at the border instead of swallowing the neighbour's text.
+  local URL_CHARS = "[%w%-%._~:/%?#%[%]@!%$&'%(%)%*%+,;=%%]"
+
+  ---The http(s) URL in `text` covering byte column `col`, or nil.
+  ---@param text string
+  ---@param col integer 1-based byte column
+  ---@return string?
+  local function url_covering(text, col)
+    local init = 1
+    while true do
+      local s, e = text:find("https?://" .. URL_CHARS .. "+", init)
+      if not s then
+        return nil
+      end
+      if col >= s and col <= e then
+        local url = text:sub(s, e):gsub("[%.,;:!%?'\"]+$", "")
+        -- A closing bracket is part of the URL only if it was opened inside
+        -- it (Wikipedia's "Foo_(bar)"); otherwise it's the prose's.
+        if url:sub(-1) == ")" and not url:find("%(") then
+          url = url:sub(1, -2)
+        end
+        return url
+      end
+      init = e + 1
+    end
+  end
+
+  ---The http(s) URL under the mouse pointer, or nil.
+  ---
+  ---Read from the BUFFER, not from tmux: `tmux attach` runs on the alternate
+  ---screen, so a terminal buffer's lines mirror exactly what tmux drew, and
+  ---the scrollback snapshot is a plain buffer -- one lookup serves both.
+  ---getmousepos() gives the byte column, which is what string.find speaks.
+  ---
+  ---A URL longer than the pane wraps onto the rows below, and each row alone
+  ---is an unusable fragment. The snapshot never has this problem (its capture
+  ---is -J, joined), but the live terminal does, and its buffer carries no
+  ---"this row wrapped" flag -- so it is inferred: a row that runs to the full
+  ---window width AND ends in a URL character was cut mid-URL, and the next
+  ---row is its continuation if it starts with one. That only ever holds in a
+  ---single or zoomed pane; in a split the row also holds the neighbour pane,
+  ---so it is never full-width and only the visible fragment is used. (Ending
+  ---in a URL character also keeps a row tmux padded out with spaces from
+  ---counting as full.)
+  ---
+  ---The inference has one hole: a line that is EXACTLY the width, ends in a
+  ---URL, and is followed by a hard newline looks identical to a wrap. tmux
+  ---knows the difference, so a URL that was stitched across rows is checked
+  ---against its -J capture of the pane, and dropped back to the clicked row
+  ---alone when tmux disagrees. One fork, and only on the stitched path.
+  ---@return string?
+  local function url_at_mouse()
+    local m = vim.fn.getmousepos()
+    if m.winid == 0 or m.line == 0 then
+      return nil
+    end
+    local buf = vim.api.nvim_win_get_buf(m.winid)
+    local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    local row = lines[m.line]
+    if not row then
+      return nil
+    end
+    if vim.bo[buf].buftype ~= "terminal" then
+      return url_covering(row, m.column)
+    end
+
+    local width = vim.api.nvim_win_get_width(m.winid)
+    local function wrapped(r)
+      local l = lines[r]
+      return l ~= nil and l:find(URL_CHARS .. "$") ~= nil and vim.fn.strdisplaywidth(l) >= width
+    end
+    local function continues(r)
+      return lines[r] ~= nil and lines[r]:find("^" .. URL_CHARS) ~= nil
+    end
+    -- Walk up to the first row of the run, then join the whole run downwards,
+    -- tracking where the clicked column landed in the joined text.
+    local first = m.line
+    while first > 1 and wrapped(first - 1) and continues(first) do
+      first = first - 1
+    end
+    local text, col = "", m.column
+    for r = first, #lines do
+      if r == m.line then
+        col = #text + m.column
+      end
+      text = text .. lines[r]
+      if not (wrapped(r) and continues(r + 1)) then
+        break
+      end
+    end
+    local url = url_covering(text, col)
+    if not url or row:find(url, 1, true) then
+      return url
+    end
+    -- Stitched across rows: let tmux confirm. The pane may be scrolled back
+    -- (wheel = copy-mode), so capture from where its viewport starts.
+    local session = my_session()
+    local pos = vim.fn.systemlist({ "tmux", "display-message", "-p", "-t", session, "#{scroll_position}" })[1]
+    local joined = vim.fn.system({ "tmux", "capture-pane", "-p", "-J", "-S", "-" .. (tonumber(pos) or 0), "-t", session })
+    if vim.v.shell_error == 0 and not joined:find(url, 1, true) then
+      return url_covering(row, m.column)
+    end
+    return url
+  end
+
   ---The editor's own window and tab keys, meaning the same thing INSIDE a
   ---workspace: <leader>- / <leader>| split a pane, <leader><tab><tab> opens a
   ---group, <leader><tab>] / [ walk them, <leader>wm zooms, and so on -- one
@@ -962,6 +1069,28 @@ function M.new(config)
     for _, k in ipairs(keys) do
       vim.keymap.set("n", k[1], k[2], { buffer = buf, desc = W.what() .. ": " .. k[3] })
     end
+
+    -- <C-LeftMouse> opens the URL under the pointer, the way a terminal
+    -- emulator's Ctrl+click does. foot never does this itself (its URLs are
+    -- keyboard-driven), and with mouse=a the click is forwarded into the
+    -- float, where tmux has nothing bound to it -- so links printed by a
+    -- build or an agent were dead text. Terminal mode too: that's where you
+    -- are when the URL scrolls past. Nothing under the pointer -> nothing
+    -- happens; plain click, drag and wheel still go to tmux untouched.
+    vim.keymap.set({ "n", "t" }, "<C-LeftMouse>", function()
+      local url = url_at_mouse()
+      if not url then
+        return
+      end
+      local _, err = vim.ui.open(url)
+      if err then
+        vim.notify(err, vim.log.levels.WARN)
+      end
+    end, { buffer = buf, desc = W.what() .. ": open URL under mouse" })
+    -- The press never reached tmux, so its release must not either: a
+    -- mouse-up with no matching mouse-down is a stray event to whatever the
+    -- pane is running.
+    vim.keymap.set({ "n", "t" }, "<C-LeftRelease>", "<Nop>", { buffer = buf })
   end
 
   ---Move between TMUX PANES with the same <C-hjkl> used for Neovim windows
